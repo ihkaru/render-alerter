@@ -1,0 +1,40 @@
+services:
+  # This is the Streamlit Web Application service
+  webapp:
+    # 'build: .' tells Compose to use the Dockerfile in the current directory
+    build: .
+    # The command to run inside the container for this service
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+    # This maps port 8501 inside the container to port 8501 on your Windows machine
+    ports:
+      - "8501:8501"
+    # This tells the service to load variables from our .env file
+    env_file:
+      - .env
+    # This is a crucial step for local development. It links your local files
+    # to the files inside the container. You can edit your code and see changes
+    # without rebuilding the container every time.
+    volumes:
+      - .:/app
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
+  # This is the background alerter service
+  alerter:
+    # It uses the same image built by the Dockerfile
+    build: .
+    # The command to run for this service
+    command: python alerter.py
+    # Tells Docker to always restart this service if it stops for any reason
+    restart: always
+    # This service also needs the secrets from the .env file
+    env_file:
+      - .env
+    # We also link the volumes here so it sees code changes and can write the
+    # state.json file to your local directory.
+    volumes:
+      - .:/app
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4

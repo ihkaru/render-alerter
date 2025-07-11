@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# State files - Do NOT commit these to Git
+# Render will handle them with a persistent disk.
+state.json
+alerts.json
+
+# IDE / OS specific
+.idea/
+.vscode/
+.DS_Store
