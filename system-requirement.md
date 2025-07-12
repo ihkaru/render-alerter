@@ -1,6 +1,6 @@
 # System Requirements Document: Personal Trading Alerter & Backtester
 
-**Version:** 2.0
+**Version:** 3.0
 **Date:** July 12, 2025
 **Author:** Gemini & User
 
@@ -14,11 +14,17 @@ The primary purpose of this system is to provide its user with a reliable, non-r
 
 The system is built upon several core principles that must be respected in all future development:
 
-- **Non-Repainting Logic:** All backtesting and alerting logic MUST avoid look-ahead bias. Decisions are made on the data of a fully closed "signal candle," and actions (trades, alerts) are executed on the open of the subsequent "action candle."
+- **Non-Repainting Logic:** All backtesting and alerting logic MUST avoid look-ahead bias. Decisions are made on the data of a fully closed "signal candle," and actions (trades, alerts) are executed on the open of the subsequent "action candle." **(Updated)** At the conclusion of a backtest, any open position MUST be closed at the last available market price to ensure final equity is accurately reflected.
+
 - **State Persistence:** The system must be resilient to restarts. The state of the live alerter (active positions) and the list of user-defined alerts are persisted to disk (`state.json`, `alerts.json`) and reloaded on startup.
+
 - **Configuration-Driven:** The system's behavior is primarily defined by user-editable JSON configuration files, not hardcoded values. This allows for flexibility and easy management.
+
 - **Modularity:** The codebase is separated into logical modules (shared_logic, backtester, alerter, app), each with a distinct responsibility. This promotes maintainability and testability.
+
 - **Visual-First Analysis:** The primary output of a backtest is not just a table of numbers, but an interactive chart that allows for deep visual inspection of every trade, empowering the user to understand _why_ the strategy behaved as it did.
+
+- **(New) Testability and Validation:** The system MUST be accompanied by a suite of automated unit tests. These tests serve as a safety net to prevent regressions and validate that the core logic (especially the backtester) behaves exactly as specified by these requirements. The codebase should be designed in a way that facilitates testing.
 
 ## 3. System Architecture & Technology Stack
 
@@ -33,31 +39,33 @@ The application is a containerized, multi-service system designed for both local
   - Charting: plotly
   - Scheduling: schedule
   - API Communication: requests
+- **(New) Development & Testing Stack:**
+  - Testing Framework: pytest
+  - Mocking Library: pytest-mock
+  - Test Directory: All unit tests reside in a top-level `/tests` directory.
+  - Test Configuration: A `pytest.ini` file is used to configure Python paths, ensuring tests can find application modules.
+  - Dependencies: Development-only dependencies are managed in `requirements-dev.txt`.
 - **Containerization:** Docker & Docker Compose
 - **Target Deployment Environment:** A Platform-as-a-Service (PaaS) like Render, or a self-managed VPS.
 
 ## 4. Data Flow & State Management
 
-The system operates with a clear flow of data and state:
-
 - **Configuration:**
   - `config.json`: Stores global settings and default strategy parameters.
-  - `alerts.json`: Stores a list of user-created, persistent alert configurations. Each alert has a unique ID, symbol, timeframe, and a full set of its own strategy parameters.
+  - `alerts.json`: Stores a list of user-created, persistent alert configurations.
 - **State:**
-  - `state.json`: A simple key-value store mapping `alert_id` to its current position status (e.g., `{"in_position": true, "entry_price": 50000}`). This file is the alerter's "memory."
+  - `state.json`: A key-value store mapping `alert_id` to its current position status.
 - **Backtesting Workflow:**
-  1.  The Streamlit UI reads the default parameters from `config.json` to populate the form.
-  2.  The user modifies parameters in the UI.
-  3.  Upon clicking "Run Backtest," the UI constructs a temporary `live_config` object from the current state of the widgets.
-  4.  This `live_config` is passed to the `backtester` module.
-  5.  The backtester fetches deep historical data, runs the non-repainting simulation, and returns a dictionary of results (metrics, trades, chart data, etc.).
-  6.  The UI displays these results.
+  1. The Streamlit UI reads default parameters from `config.json`.
+  2. The user modifies parameters in the UI.
+  3. The UI constructs a temporary `live_config` object.
+  4. This `live_config` is passed to the `backtester` module.
+  5. The backtester fetches deep historical data, runs the non-repainting simulation, and returns a dictionary of results. **(Updated)** This dictionary now includes `entry_size_usd` within the trade log for enhanced analysis and testability.
+  6. The UI displays these results.
 - **Alerting Workflow:**
-  1.  The `alerter.py` script runs as a persistent background process.
-  2.  On a schedule, it reads `alerts.json` and `state.json`.
-  3.  It loops through each defined alert.
-  4.  For each alert, it fetches recent market data, checks the strategy conditions (non-repainting), and compares against its state in `state.json`.
-  5.  If conditions are met for a new signal, it sends a Telegram notification and updates `state.json`.
+  1. The `alerter.py` script runs as a persistent background process.
+  2. It reads `alerts.json` and `state.json`.
+  3. It loops through each defined alert, fetches recent data, checks strategy conditions, and sends notifications if triggered.
 
 ## 5. Functional Requirements (Features)
 
@@ -65,13 +73,11 @@ The system operates with a clear flow of data and state:
 
 - **F1.1:** Must perform a stateful, non-repainting backtest as per the logic defined in section 2.
 - **F1.2:** Must support configurable commission costs, applied to both entry and exit of a trade.
-- **F1.3:** Must correctly implement all risk management rules defined in the Pine Script, including stateful equity tracking, "Size Down," and "Fake Loss" simulations.
+- **F1.3:** Must correctly implement all risk management rules, including stateful equity tracking, "Size Down," and "Fake Loss" simulations.
 - **F1.4:** Must implement a timeframe-aware indicator "warm-up" period, fetching sufficient historical data and correctly aligning the backtest start to ensure indicators are valid from the very first evaluated candle.
-- **F1.5:** Must output a comprehensive results dictionary containing performance metrics, a detailed trade log, equity curve data, and all analytics data required by the UI.
-- **F1.6:** **Backtest Debugging Output:** If a backtest results in zero trades, the engine MUST return a `debug_info` object containing:
-  - The total count of primary buy signals (e.g., Golden Crosses) found.
-  - A dictionary counting the number of times each specific filter (RSI, Price Distance, etc.) was the reason for a rejected trade.
-  - A detailed log of the first ~20 failed events, showing the timestamp and the exact filter(s) that failed.
+- **F1.5:** Must output a comprehensive results dictionary containing performance metrics, a detailed trade log, equity curve data, and all analytics data required by the UI. **(Updated)** The detailed trade log for each trade MUST include the calculated position size in USD (`entry_size_usd`).
+- **F1.6:** **Backtest Debugging Output:** If a backtest results in zero trades, the engine MUST return a `debug_info` object containing the count of primary buy signals and a breakdown of which filters caused the rejections.
+- **(New) F1.7: End-of-Period Position Closure:** If a position is still open when the historical data is exhausted, the backtester MUST automatically close the trade at the `close` price of the final candle. This ensures the final P/L is accurately reported.
 
 #### F2: Live Alerting Service
 
@@ -115,18 +121,21 @@ The application UI is a web-based dashboard built with Streamlit.
   - `UR2.3.2:` The "Buy and Hold" equity curve as a dashed line. This MUST be toggleable with a checkbox on the UI.
   - `UR2.3.3:` The portfolio's drawdown over time, visualized as a secondary area graph on the same chart.
 - **UR2.4 (Debugging Display):** If a backtest produces no trades, the UI must display the debugging information from `F1.6`, including the summary table of failed filters and the detailed log within an expander.
-- **UR2.5 (Trade Log):** A collapsible, detailed table of every trade executed during the backtest must be available.
+- **UR2.5 (Trade Log):** A collapsible, detailed table of every trade executed during the backtest must be available. **(Updated)** The underlying data for this log now contains the `entry_size_usd` for potential display.
 
 ## 7. Non-Functional Requirements
 
-- **NFR1 (Reliability):** The `alerter.py` service must be configured to restart automatically on failure (`restart: always` in Docker Compose).
-- **NFR2 (Security):** All sensitive credentials (e.g., Telegram Token) MUST be managed via environment variables. The `.env` file and state files (`state.json`, `alerts.json`) MUST be included in `.gitignore` and never committed to version control.
-- **NFR3 (Usability):** The application must be fully runnable within a local Docker environment with clear instructions.
+- **NFR1 (Reliability):** The `alerter.py` service must be configured to restart automatically on failure.
+- **NFR2 (Security):** All sensitive credentials MUST be managed via environment variables. The `.env` file and state files MUST be included in `.gitignore`.
+- **NFR3 (Usability):** The application must be fully runnable within a local Docker environment with clear instructions. **(Updated)** The local development setup includes a documented process for installing dependencies and running the test suite.
+- **(New) NFR4 (Testability & Validation):** The project MUST maintain a suite of unit tests using `pytest`. Any new core logic or bug fix in the `backtester` or `shared_logic` modules SHOULD be accompanied by a corresponding test to validate its correctness and prevent future regressions.
 
 ## 8. Deployment & Operations
 
-- **DEV1 (Local Development):** The project must be fully runnable via a single `docker-compose up --build` command.
+- **(Updated) DEV1: Local Development & Validation:** The local development workflow is now twofold:
+  - **DEV1.1 (Running the Application):** The project must be fully runnable via a single `docker-compose up --build` command after installing dependencies with `pip install -r requirements.txt`.
+  - **DEV1.2 (Running the Tests):** The unit test suite must be executable via the `pytest -v` command after installing both application and development dependencies (`pip install -r requirements.txt -r requirements-dev.txt`).
 - **PROD1 (Production Target - Render):** The system is designed for a two-service deployment on Render:
-  - A **Web Service** running the Streamlit UI. Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
-  - A **Background Worker** running the alerter script. Start command: `python alerter.py`
-- **PROD2 (Persistent State on Render):** A Render **Persistent Disk** MUST be created and attached to **BOTH** the Web Service and the Background Worker. The mount path for this disk MUST be `/app` to ensure both services read from and write to the same `alerts.json` and `state.json` files.
+  - A **Web Service** running the Streamlit UI.
+  - A **Background Worker** running the alerter script.
+- **PROD2 (Persistent State on Render):** A Render Persistent Disk MUST be used for `alerts.json` and `state.json`.
