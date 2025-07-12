@@ -93,32 +93,59 @@ def fetch_data(asset_type: str, symbol: str, timeframe: str, params: Dict[str, A
         return None
 
 def calculate_indicators(df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
-    # This function is correct, no changes needed
     p = params
-    df_copy = df.copy() 
+    df_copy = df.copy()
     for col in ['open', 'high', 'low', 'close', 'volume']:
         if col in df_copy.columns: df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce')
     df_copy.dropna(subset=['close'], inplace=True)
     if df_copy.empty: return df_copy
+
     def get_ma(source, length, ma_type):
         ma_type = ma_type.lower() if ma_type else 'sma'
         if length is None or length <= 0: return None
+        # Ensure source has enough non-NaN values for the calculation
+        if source.count() < length: return None
         if ma_type == 'sma': return ta.sma(source, length=length)
         if ma_type == 'ema': return ta.ema(source, length=length)
         return None
-    df_copy['ma_short'] = get_ma(df_copy['close'], p.get('short_window'), p.get('ma_type'))
-    df_copy['ma_long'] = get_ma(df_copy['close'], p.get('long_window'), p.get('ma_type'))
-    if 'ma_short' in df_copy.columns and df_copy['ma_short'] is not None: df_copy['ma_short_slope'] = df_copy['ma_short'].diff()
-    if 'ma_long' in df_copy.columns and df_copy['ma_long'] is not None: df_copy['ma_long_slope'] = df_copy['ma_long'].diff()
-    if p.get('use_price_ma_filter'): df_copy['filter_ma'] = get_ma(df_copy['close'], p.get('price_ma_filter_period'), p.get('price_ma_filter_type'))
-    if p.get('use_rsi_filter'): df_copy['rsi'] = ta.rsi(df_copy['close'], length=p.get('rsi_period'))
-    if p.get('use_volatility_filter'): df_copy['atr'] = ta.atr(df_copy['high'], df_copy['low'], df_copy['close'], length=p.get('atr_period'))
-    if p.get('use_volume_filter') and 'volume' in df_copy.columns: df_copy['volume_ma'] = ta.sma(df_copy['volume'], length=p.get('volume_ma_period'))
-    if p.get('slope_filter_mode') == "Gunakan MA Kustom":
-        df_copy['custom_slope_ma'] = get_ma(df_copy['close'], p.get('custom_slope_ma_period'), p.get('custom_slope_ma_type'))
-        if 'custom_slope_ma' in df_copy.columns and df_copy['custom_slope_ma'] is not None: df_copy['custom_slope_ma_slope'] = df_copy['custom_slope_ma'].diff()
-    return df_copy
 
+    # --- THIS IS THE CORRECTED LOGIC ---
+    ma_short = get_ma(df_copy['close'], p.get('short_window'), p.get('ma_type'))
+    if ma_short is not None:
+        df_copy['ma_short'] = ma_short
+        df_copy['ma_short_slope'] = ma_short.diff()
+
+    ma_long = get_ma(df_copy['close'], p.get('long_window'), p.get('ma_type'))
+    if ma_long is not None:
+        df_copy['ma_long'] = ma_long
+        df_copy['ma_long_slope'] = ma_long.diff()
+        
+    if p.get('use_price_ma_filter'):
+        filter_ma = get_ma(df_copy['close'], p.get('price_ma_filter_period'), p.get('price_ma_filter_type'))
+        if filter_ma is not None: df_copy['filter_ma'] = filter_ma
+
+    if p.get('use_rsi_filter'):
+        rsi_period = p.get('rsi_period')
+        if rsi_period and df_copy['close'].count() >= rsi_period:
+             df_copy['rsi'] = ta.rsi(df_copy['close'], length=rsi_period)
+
+    if p.get('use_volatility_filter'):
+        atr_period = p.get('atr_period')
+        if atr_period and df_copy['high'].count() >= atr_period:
+            df_copy['atr'] = ta.atr(df_copy['high'], df_copy['low'], df_copy['close'], length=atr_period)
+
+    if p.get('use_volume_filter') and 'volume' in df_copy.columns:
+        volume_ma_period = p.get('volume_ma_period')
+        if volume_ma_period and df_copy['volume'].count() >= volume_ma_period:
+            df_copy['volume_ma'] = ta.sma(df_copy['volume'], length=volume_ma_period)
+
+    if p.get('slope_filter_mode') == "Gunakan MA Kustom":
+        custom_ma = get_ma(df_copy['close'], p.get('custom_slope_ma_period'), p.get('custom_slope_ma_type'))
+        if custom_ma is not None:
+            df_copy['custom_slope_ma'] = custom_ma
+            df_copy['custom_slope_ma_slope'] = custom_ma.diff()
+            
+    return df_copy
 # ---> THIS ENTIRE FUNCTION IS REWRITTEN AND CORRECTED <---
 def evaluate_buy_filters(candle: pd.Series, params: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """
