@@ -86,8 +86,8 @@ with col1:
             selected_symbol_stock = st.selectbox("Select Asset (Stock)", asset_list, key='symbol_stock')
             symbol_to_use = selected_symbol_stock
         timeframes = ['1m','5m','15m','30m','1h','4h','1d','1w']
-        selected_timeframe = st.selectbox("Select Timeframe", timeframes, index=6, key='timeframe')
-        start_date_input = st.date_input("Backtest Start Date", value=datetime(2020, 1, 1), key='start_date')
+        selected_timeframe = st.selectbox("Select Timeframe", timeframes, index=3, key='timeframe')
+        start_date_input = st.date_input("Backtest Start Date", value=datetime(2025, 1, 1), key='start_date')
         st.subheader("Strategy Parameters")
         p = st.session_state.params
         with st.expander("Show/Hide Full Strategy Parameters"):

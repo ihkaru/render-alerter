@@ -1,71 +1,54 @@
 # System Requirements Document: Personal Trading Alerter & Backtester
 
-**Version:** 3.0
+**Version:** 4.0
 **Date:** July 12, 2025
 **Author:** Gemini & User
+**Revision Note:** This version incorporates significant clarifications and logical refinements discovered during a comprehensive unit testing and debugging cycle. It represents the most accurate and validated system specification.
 
 ## 1. Project Vision & Purpose
 
 This document outlines the system requirements for a personal, professional-grade quantitative trading analysis and alerting tool.
 
-The primary purpose of this system is to provide its user with a reliable, non-repainting backtesting engine and a persistent live alerting mechanism. It is designed to be a fully-owned alternative to cloud platforms like TradingView, giving the user complete control over the strategy logic, data sources, and operational environment. The overarching goal is to enable rapid strategy iteration and validation to support the user's investment portfolio growth.
+The primary purpose of this system is to provide its user with a reliable, non-repainting backtesting engine and a persistent live alerting mechanism. It is designed to be a fully-owned alternative to cloud platforms, giving the user complete control over the strategy logic, data sources, and operational environment. The overarching goal is to enable rapid strategy iteration and validation to support the user's investment portfolio growth.
 
 ## 2. Core Philosophy & Guiding Principles
 
 The system is built upon several core principles that must be respected in all future development:
 
-- **Non-Repainting Logic:** All backtesting and alerting logic MUST avoid look-ahead bias. Decisions are made on the data of a fully closed "signal candle," and actions (trades, alerts) are executed on the open of the subsequent "action candle." **(Updated)** At the conclusion of a backtest, any open position MUST be closed at the last available market price to ensure final equity is accurately reflected.
+- **Non-Repainting Logic:** All backtesting and alerting logic MUST avoid look-ahead bias. Decisions are made on the data of a fully closed "signal candle," and actions (trades, alerts) are executed on the open of the subsequent "action candle."
+
+- **(New & Clarified) Independent Exit Triggers vs. Filtered Entry:** The system's logic for entering and exiting positions is fundamentally different and MUST be respected.
+
+  - **Entry Logic (AND):** A trade is only entered if the primary signal (e.g., a Golden Cross) occurs **AND** it passes a sequential chain of all enabled buy-side filters (e.g., RSI, Volume, Slope, etc.). A failure at any step prevents entry.
+  - **Exit Logic (OR):** A trade is exited if **ANY** enabled exit condition is met. The conditions (Stop Loss, Recovery Exit, MA Slope-based Signal, RSI-based Signal) are evaluated independently. This ensures a protective stop loss, for example, is not blocked by another exit rule.
+
+- **(New) End-of-Period Position Closure:** At the conclusion of a backtest, any open position MUST be automatically closed at the `close` price of the final available candle to ensure final equity is accurately reflected. This is a non-negotiable backstop to correctly calculate final P/L.
 
 - **State Persistence:** The system must be resilient to restarts. The state of the live alerter (active positions) and the list of user-defined alerts are persisted to disk (`state.json`, `alerts.json`) and reloaded on startup.
 
-- **Configuration-Driven:** The system's behavior is primarily defined by user-editable JSON configuration files, not hardcoded values. This allows for flexibility and easy management.
+- **Configuration-Driven:** The system's behavior is primarily defined by user-editable JSON configuration files, not hardcoded values.
 
-- **Modularity:** The codebase is separated into logical modules (shared_logic, backtester, alerter, app), each with a distinct responsibility. This promotes maintainability and testability.
-
-- **Visual-First Analysis:** The primary output of a backtest is not just a table of numbers, but an interactive chart that allows for deep visual inspection of every trade, empowering the user to understand _why_ the strategy behaved as it did.
-
-- **(New) Testability and Validation:** The system MUST be accompanied by a suite of automated unit tests. These tests serve as a safety net to prevent regressions and validate that the core logic (especially the backtester) behaves exactly as specified by these requirements. The codebase should be designed in a way that facilitates testing.
+- **Testability and Validation:** The system MUST be accompanied by a comprehensive suite of automated unit tests. These tests serve as a safety net to prevent regressions and validate that the core logic behaves exactly as specified by these requirements.
 
 ## 3. System Architecture & Technology Stack
 
-The application is a containerized, multi-service system designed for both local development and cloud deployment.
-
 - **Language:** Python 3.10+
-- **Core Libraries:**
-  - Data Analysis: pandas, numpy
-  - Technical Analysis: pandas-ta
-  - Data Fetching: ccxt (for crypto), yfinance (for stocks)
-  - Web UI: streamlit
-  - Charting: plotly
-  - Scheduling: schedule
-  - API Communication: requests
-- **(New) Development & Testing Stack:**
-  - Testing Framework: pytest
-  - Mocking Library: pytest-mock
-  - Test Directory: All unit tests reside in a top-level `/tests` directory.
-  - Test Configuration: A `pytest.ini` file is used to configure Python paths, ensuring tests can find application modules.
-  - Dependencies: Development-only dependencies are managed in `requirements-dev.txt`.
+- **Core Libraries:** pandas, numpy, pandas-ta, ccxt, yfinance, streamlit, plotly, schedule, requests
+- **Testing Stack:** pytest, pytest-mock
 - **Containerization:** Docker & Docker Compose
-- **Target Deployment Environment:** A Platform-as-a-Service (PaaS) like Render, or a self-managed VPS.
 
 ## 4. Data Flow & State Management
 
-- **Configuration:**
-  - `config.json`: Stores global settings and default strategy parameters.
-  - `alerts.json`: Stores a list of user-created, persistent alert configurations.
-- **State:**
-  - `state.json`: A key-value store mapping `alert_id` to its current position status.
+- **Configuration:** `config.json`, `alerts.json`
+- **State:** `state.json`
 - **Backtesting Workflow:**
-  1. The Streamlit UI reads default parameters from `config.json`.
-  2. The user modifies parameters in the UI.
-  3. The UI constructs a temporary `live_config` object.
-  4. This `live_config` is passed to the `backtester` module.
-  5. The backtester fetches deep historical data, runs the non-repainting simulation, and returns a dictionary of results. **(Updated)** This dictionary now includes `entry_size_usd` within the trade log for enhanced analysis and testability.
-  6. The UI displays these results.
-- **Alerting Workflow:**
-  1. The `alerter.py` script runs as a persistent background process.
-  2. It reads `alerts.json` and `state.json`.
-  3. It loops through each defined alert, fetches recent data, checks strategy conditions, and sends notifications if triggered.
+  1. UI reads `config.json`.
+  2. User modifies parameters in the UI, creating a temporary `live_config` object.
+  3. `live_config` is passed to the `backtester` module.
+  4. The backtester fetches data, runs the simulation, and returns a results dictionary.
+  5. **(Updated)** The results dictionary is returned regardless of whether trades were executed.
+  6. The UI displays the results.
+- **Alerting Workflow:** The `alerter.py` script runs as a persistent background process, looping through `alerts.json` and checking for signals against the persistent state in `state.json`.
 
 ## 5. Functional Requirements (Features)
 
@@ -73,19 +56,32 @@ The application is a containerized, multi-service system designed for both local
 
 - **F1.1:** Must perform a stateful, non-repainting backtest as per the logic defined in section 2.
 - **F1.2:** Must support configurable commission costs, applied to both entry and exit of a trade.
-- **F1.3:** Must correctly implement all risk management rules, including stateful equity tracking, "Size Down," and "Fake Loss" simulations.
-- **F1.4:** Must implement a timeframe-aware indicator "warm-up" period, fetching sufficient historical data and correctly aligning the backtest start to ensure indicators are valid from the very first evaluated candle.
-- **F1.5:** Must output a comprehensive results dictionary containing performance metrics, a detailed trade log, equity curve data, and all analytics data required by the UI. **(Updated)** The detailed trade log for each trade MUST include the calculated position size in USD (`entry_size_usd`).
-- **F1.6:** **Backtest Debugging Output:** If a backtest results in zero trades, the engine MUST return a `debug_info` object containing the count of primary buy signals and a breakdown of which filters caused the rejections.
-- **(New) F1.7: End-of-Period Position Closure:** If a position is still open when the historical data is exhausted, the backtester MUST automatically close the trade at the `close` price of the final candle. This ensures the final P/L is accurately reported.
+- **F1.3: (Updated & Expanded) Comprehensive Risk & Exit Management:** The engine must correctly implement all of the following stateful rules based on the user's configuration. The exit conditions operate under **OR** logic.
+
+  - **`Stop Loss`:** Must exit a trade at the exact stop-loss price if the `low` of any action candle touches or crosses below it.
+  - **`Recovery Exit`:** Must correctly track a trade that has dipped significantly and exit it if the price recovers to near the entry point, as defined by the thresholds.
+  - **`RSI Sell Threshold`:** Must trigger an exit if the RSI exceeds the defined sell threshold, independent of other signals.
+  - **`Minimum Hold Duration`:** Must _ignore_ valid primary sell signals (like a negative MA slope) if the trade has not been open for the required number of bars.
+  - **`Size Down`:** Must correctly reduce the position size for the next trade following a losing trade, based on the configured percentage.
+  - **`Fake Loss`:** Must correctly calculate a separate `adjusted_equity` by "withdrawing" a percentage of profits, and use this reduced equity value for all subsequent position sizing calculations.
+  - **`Leverage Multiplier`:** Must correctly scale the calculated `entry_size_usd` by the specified multiplier.
+  - **`Cooldown Period`:** Must prevent a new buy signal from executing if it occurs within the configured number of bars after the previous trade's exit.
+
+- **F1.4: Timeframe-Aware Indicator Warm-up:** Must fetch sufficient historical data and correctly align the backtest start to the first candle where all required indicators (based on the longest lookback period) are valid. The user's requested start date is a minimum; the actual start may be later.
+
+- **F1.5: (Updated) Comprehensive Results Dictionary:** Must output a results dictionary containing performance metrics, a detailed trade log, and equity curve data. Crucially, it MUST **always** return the `historical_data` and `debug_info` objects, even if no trades were executed.
+
+- **F1.6: Backtest Debugging Output:** If a backtest results in zero trades, the `debug_info` object MUST contain the count of primary buy signals and a breakdown of which filters caused the rejections.
+
+- **F1.7: (New & Validated) End-of-Period Position Closure:** If a position is still open when historical data is exhausted, the backtester MUST automatically close the trade at the `close` price of the final candle.
 
 #### F2: Live Alerting Service
 
 - **F2.1:** Must run as a continuous, scheduled background process.
 - **F2.2:** Must read its list of jobs from `alerts.json`.
-- **F2.3:** Must process each alert independently using its specific configuration.
-- **F2.4:** Must maintain a persistent state for each alert using `state.json` to track open positions across restarts.
-- **F2.5:** Must integrate with the Telegram API to send formatted alert messages. Secrets (Token, Chat ID) must be loaded from environment variables.
+- **F2.3:** (Updated) Must process each alert independently, implementing the same signal and filter logic as the backtester (including `Recovery Exit`, `RSI Sell`, etc.) for maximum consistency.
+- **F2.4:** Must maintain a persistent state for each alert using `state.json`.
+- **F2.5:** Must integrate with the Telegram API.
 
 #### F3: Alert Management (CRUD)
 
@@ -120,15 +116,16 @@ The application UI is a web-based dashboard built with Streamlit.
   - `UR2.3.1:` The strategy's equity curve as a primary line graph.
   - `UR2.3.2:` The "Buy and Hold" equity curve as a dashed line. This MUST be toggleable with a checkbox on the UI.
   - `UR2.3.3:` The portfolio's drawdown over time, visualized as a secondary area graph on the same chart.
-- **UR2.4 (Debugging Display):** If a backtest produces no trades, the UI must display the debugging information from `F1.6`, including the summary table of failed filters and the detailed log within an expander.
+- **UR2.4: (Updated) Debugging & No-Trade Display:** If a backtest produces no trades, the UI MUST display the debugging information from F1.6. It should STILL render the price chart (UR2.2) using the `historical_data` that is always returned.
 - **UR2.5 (Trade Log):** A collapsible, detailed table of every trade executed during the backtest must be available. **(Updated)** The underlying data for this log now contains the `entry_size_usd` for potential display.
 
 ## 7. Non-Functional Requirements
 
 - **NFR1 (Reliability):** The `alerter.py` service must be configured to restart automatically on failure.
-- **NFR2 (Security):** All sensitive credentials MUST be managed via environment variables. The `.env` file and state files MUST be included in `.gitignore`.
-- **NFR3 (Usability):** The application must be fully runnable within a local Docker environment with clear instructions. **(Updated)** The local development setup includes a documented process for installing dependencies and running the test suite.
-- **(New) NFR4 (Testability & Validation):** The project MUST maintain a suite of unit tests using `pytest`. Any new core logic or bug fix in the `backtester` or `shared_logic` modules SHOULD be accompanied by a corresponding test to validate its correctness and prevent future regressions.
+- **NFR2 (Security):** All sensitive credentials MUST be managed via environment variables.
+- **NFR3 (Usability):** The application must be fully runnable within a local Docker environment with clear instructions.
+- **NFR4 (Testability & Validation):** The project MUST maintain a suite of unit tests using `pytest` to validate core logic and prevent regressions.
+- **(New) NFR5: Robustness to Imperfect Data:** The backtesting engine must handle common real-world data issues gracefully. It must not crash on data with gaps (missing rows) or on data that is perfectly flat. It must return a clear error message if the provided data is too short to calculate the required indicators.
 
 ## 8. Deployment & Operations
 

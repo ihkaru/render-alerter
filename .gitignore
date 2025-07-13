@@ -16,3 +16,6 @@ alerts.json
 .idea/
 .vscode/
 .DS_Store
+
+# etc
+full_context.txt

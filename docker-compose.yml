@@ -16,9 +16,12 @@ services:
     # without rebuilding the container every time.
     volumes:
       - .:/app
+    # --- FIX START ---
+    # Explicitly set the DNS servers for this container to bypass ISP blocks.
     dns:
-      - 8.8.8.8
-      - 8.8.4.4
+      - 1.1.1.1
+      - 1.0.0.1
+    # --- FIX END ---
 
   # This is the background alerter service
   alerter:
@@ -35,6 +38,9 @@ services:
     # state.json file to your local directory.
     volumes:
       - .:/app
+    # --- FIX START ---
+    # Also set the DNS for the alerter service so it can fetch data.
     dns:
-      - 8.8.8.8
-      - 8.8.4.4
+      - 1.1.1.1
+      - 1.0.0.1
+    # --- FIX END ---

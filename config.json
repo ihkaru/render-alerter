@@ -1,6 +1,7 @@
 {
     "telegram": { "enabled": true },
     "ccxt_exchange_id": "binance",
+    "binance_api_ip": "18.64.23.181",
     "scan_interval_minutes": 15,
     "backtest_settings": {
       "initial_capital": 100,
@@ -39,7 +40,7 @@
       "dip_pct_trigger": 2.0,
       "recovery_pct_threshold": 0.0,
       "use_stop_loss": true,
-      "stop_loss_pct": 13.0,
+      "stop_loss_pct": 4.0,
       "base_position_pct": 95.0,
       "leverage_multiplier": 1.0,
       "use_size_down": true,

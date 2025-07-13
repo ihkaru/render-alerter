@@ -23,8 +23,13 @@ def run_backtest(symbol: str, asset_type: str, timeframe: str, full_config: Dict
     df = fetch_full_historical_data(asset_type, symbol, timeframe, start_date_str, warmup_timedelta)
     if df is None or df.empty: return {"error": f"Failed to fetch deep historical data."}
     df_indicators = calculate_indicators(df, params)
-    first_valid_ma_index = df_indicators[['ma_short', 'ma_long']].dropna().index.min()
-    if pd.isna(first_valid_ma_index): return {"error": "Could not calculate moving averages. Check data or indicator periods."}
+    try:
+        first_valid_ma_index = df_indicators[['ma_short', 'ma_long']].dropna().index.min()
+        if pd.isna(first_valid_ma_index):
+            return {"error": "Could not calculate moving averages. Check data or indicator periods."}
+    except KeyError:
+        # This occurs if data is too short for calculate_indicators to even create the MA columns.
+        return {"error": f"Not enough data for backtest after start date and indicator warmup."}
     user_start_ts = pd.to_datetime(start_date_str)
     actual_start_ts = max(user_start_ts, first_valid_ma_index)
     historical_df = df_indicators[df_indicators.index >= actual_start_ts].copy()
@@ -46,13 +51,29 @@ def run_backtest(symbol: str, asset_type: str, timeframe: str, full_config: Dict
                 if has_dipped_deep and abs(signal_candle['close'] - entry_price) / entry_price * 100 <= params.get('recovery_pct_threshold', 0.0):
                     exit_price, reason = action_candle['open'], "Recovery Exit"
             if exit_price == 0.0:
+                # --- START OF FIX ---
+                # Evaluate sell conditions independently
+                slope_sell = False
+                rsi_sell = False
+
+                # Condition 1: Standard MA Slope sell
                 ma_short_slope = signal_candle.get('ma_short_slope')
-                is_sell_trigger = ma_short_slope <= 0 if pd.notna(ma_short_slope) else False
-                pass_rsi_sell = not params.get('use_rsi_filter') or (signal_candle.get('rsi', 100) > params.get('rsi_sell_threshold', 100))
+                if ma_short_slope <= 0 if pd.notna(ma_short_slope) else False:
+                    slope_sell = True
+
+                # Condition 2: Overbought RSI sell
+                if params.get('use_rsi_filter'):
+                    if signal_candle.get('rsi', 0) > params.get('rsi_sell_threshold', 100):
+                        rsi_sell = True
+
+                # Check general exit filters
                 bars_held = (i - 1) - entry_bar_index
                 pass_hold = not params.get('use_hold_duration_filter') or (bars_held >= params.get('min_hold_bars', 0))
-                if is_sell_trigger and pass_rsi_sell and pass_hold:
+
+                # Trigger exit if EITHER condition is met AND it passes the hold filter
+                if (slope_sell or rsi_sell) and pass_hold:
                     exit_price, reason = action_candle['open'], "Sell Signal"
+                # --- END OF FIX ---
             if exit_price > 0.0:
                 exit_value = (entry_size_usd / entry_price) * exit_price
                 commission = (entry_size_usd + exit_value) * (commission_pct / 100.0)
@@ -106,7 +127,17 @@ def run_backtest(symbol: str, asset_type: str, timeframe: str, full_config: Dict
         equity_curve_data[last_candle.name] = equity
     # --- END OF FINAL FIX ---
 
-    if not trades: return {"message": "No trades were executed.", "debug_info": {"crossover_events_found": crossover_events, "failed_filter_counts": dict(debug_failed_filters), "detailed_log": debug_log}}
+    if not trades:
+        # Also return the historical data so the UI can still plot the price chart
+        return {
+            "message": "No trades were executed.",
+            "debug_info": {
+                "crossover_events_found": crossover_events,
+                "failed_filter_counts": dict(debug_failed_filters),
+                "detailed_log": debug_log
+            },
+            "historical_data": historical_df.to_dict('index')
+        }
     equity_curve = pd.Series(equity_curve_data).sort_index()
     peak_equity = equity_curve.cummax()
     drawdown_series = peak_equity - equity_curve
