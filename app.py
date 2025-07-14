@@ -6,10 +6,11 @@ import time
 import ccxt
 from datetime import datetime
 from backtester import run_backtest
+from optimizer import run_optimization
 
-# --- Page Config and Helper Functions (No Changes) ---
 st.set_page_config(page_title="Trading Strategy Dashboard", layout="wide")
 
+# --- Helper Functions (Unchanged) ---
 def load_json(filepath: str, default_value=None):
     try:
         with open(filepath, 'r') as f:
@@ -31,17 +32,22 @@ def get_crypto_assets():
         st.error(f"Could not fetch asset list: {e}")
         return ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
 
-def create_price_chart(price_data: pd.DataFrame, trades: pd.DataFrame, selected_timezone: str):
+# --- Charting Functions (Unchanged) ---
+def create_price_chart(price_data: pd.DataFrame, trades: pd.DataFrame, params: dict, selected_timezone: str):
     if price_data.empty: return go.Figure()
     price_data.index = price_data.index.tz_convert(selected_timezone)
     if not trades.empty:
         trades['entry_ts'] = pd.to_datetime(trades['entry_ts']).dt.tz_convert(selected_timezone)
         trades['exit_ts'] = pd.to_datetime(trades['exit_ts']).dt.tz_convert(selected_timezone)
     fig = go.Figure(data=[go.Candlestick(x=price_data.index, open=price_data['open'], high=price_data['high'], low=price_data['low'], close=price_data['close'], name='Price')])
+    if 'ma_short' in price_data.columns and price_data['ma_short'].notna().any():
+        fig.add_trace(go.Scatter(x=price_data.index, y=price_data['ma_short'], mode='lines', name=f"MA Cepat ({params.get('short_window')})", line=dict(color='#3498db', width=1.5)))
+    if 'ma_long' in price_data.columns and price_data['ma_long'].notna().any():
+        fig.add_trace(go.Scatter(x=price_data.index, y=price_data['ma_long'], mode='lines', name=f"MA Lambat ({params.get('long_window')})", line=dict(color='#f1c40f', width=1.5)))
     if not trades.empty:
         fig.add_trace(go.Scatter(x=trades['entry_ts'], y=trades['entry_price'], mode='markers', marker=dict(symbol='triangle-up', color='cyan', size=10), name='Buy'))
         fig.add_trace(go.Scatter(x=trades['exit_ts'], y=trades['exit_price'], mode='markers', marker=dict(symbol='triangle-down', color='yellow', size=10), name='Sell'))
-    fig.update_layout(title='Price Chart with Trades', template='plotly_dark', xaxis_rangeslider_visible=False)
+    fig.update_layout(title='Price Chart with Trades and Strategy Indicators', template='plotly_dark', xaxis_rangeslider_visible=False)
     return fig
 
 def create_equity_chart(equity_curve: pd.Series, bnh_equity: pd.Series, drawdown_series: pd.Series, show_bnh: bool, selected_timezone: str):
@@ -49,212 +55,251 @@ def create_equity_chart(equity_curve: pd.Series, bnh_equity: pd.Series, drawdown
     bnh_equity.index = pd.to_datetime(bnh_equity.index).tz_convert(selected_timezone)
     drawdown_series.index = pd.to_datetime(drawdown_series.index).tz_convert(selected_timezone)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve, mode='lines', name='Strategy Equity', line=dict(color='cyan', width=2)))
+    fig.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve, mode='lines', name='Strategy Equity'))
     if show_bnh:
-        fig.add_trace(go.Scatter(x=bnh_equity.index, y=bnh_equity, mode='lines', name='Buy & Hold Equity', line=dict(color='orange', width=2, dash='dash')))
-    fig.add_trace(go.Scatter(x=drawdown_series.index, y=drawdown_series, fill='tozeroy', mode='none', name='Drawdown', yaxis='y2', fillcolor='rgba(255, 82, 82, 0.3)'))
-    fig.update_layout(title_text='Portfolio Equity Curve & Drawdown', template='plotly_dark', yaxis=dict(title='Portfolio Value ($)'), yaxis2=dict(title='Drawdown ($)', overlaying='y', side='right', showgrid=False), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        fig.add_trace(go.Scatter(x=bnh_equity.index, y=bnh_equity, mode='lines', name='Buy & Hold Equity', line=dict(dash='dash')))
+    fig.add_trace(go.Scatter(x=drawdown_series.index, y=drawdown_series, fill='tozeroy', mode='none', name='Drawdown', yaxis='y2'))
+    fig.update_layout(title_text='Portfolio Equity Curve & Drawdown', template='plotly_dark', yaxis2=dict(overlaying='y', side='right'))
     return fig
 
-# --- Main App ---
-st.title("📈 Trading Strategy Backtester & Alert Manager")
+st.title(":chart_with_upwards_trend: Trading Strategy Dashboard")
 config = load_json('config.json')
 alerts = load_json('alerts.json', default_value=[])
-if 'params' not in st.session_state:
-    default_params = config.get('default_strategy_params', {})
-    if not default_params:
-        st.error("FATAL: `default_strategy_params` missing in config.json.")
-        st.stop()
-    st.session_state.params = default_params.copy()
 
-col1, col2 = st.columns([1, 1])
-symbol_to_use = "BTC/USDT" 
+def initialize_state():
+    if 'params_initialized' not in st.session_state:
+        default_params = config.get('default_strategy_params', {})
+        st.session_state.update(default_params)
+        st.session_state.params_initialized = True
+        st.session_state.start_date = datetime(2023, 1, 1)
+        st.session_state.end_date = datetime.now()
 
-with col1:
-    st.header("1. Configure & Backtest")
-    with st.form(key="create_alert_form"):
-        # --- Form widgets are unchanged ---
-        st.subheader("Asset & Timeframe")
-        asset_type=st.radio("Asset Type",["Crypto","Stocks"],horizontal=True,key='asset_type')
-        if asset_type == "Crypto":
+def apply_loaded_params():
+    if 'params_to_load' in st.session_state:
+        params = st.session_state.params_to_load
+        for key, value in params.items():
+            if key in st.session_state:
+                if isinstance(st.session_state[key], bool) and not isinstance(value, bool):
+                     st.session_state[key] = bool(value)
+                else:
+                     st.session_state[key] = value
+        del st.session_state['params_to_load']
+
+initialize_state()
+apply_loaded_params()
+
+with st.sidebar:
+    st.header("Strategy Controls")
+     # --- NEW: Optimizer workflow instructions ---
+    with st.expander("🚀 Run Parameter Optimizer"):
+        st.info("To find the best parameters, use our powerful cloud-based optimizer on Google Colab.")
+        # --- IMPORTANT: Replace with your actual Colab link after creating it ---
+        st.markdown("1. [Click here to open the Optimizer Notebook](https://colab.research.google.com/).", unsafe_allow_html=True)
+        st.markdown("2. Upload the `optimizer_colab.py` content to a new notebook.")
+        st.markdown("3. Run the notebook, upload configs, and copy the final JSON output.")
+        st.markdown("4. Paste the JSON into the 'Load Optimized Parameters' section in the main panel.")
+    with st.expander("Asset & Timeframe", expanded=True):
+        asset_type = st.radio("Asset Type", ["Crypto", "Stocks"], key='asset_type', horizontal=True)
+        if st.session_state.asset_type == "Crypto":
             asset_list = get_crypto_assets()
-            default_index = asset_list.index("BTC/USDT") if "BTC/USDT" in asset_list else 0
-            selected_symbol = st.selectbox("Select Asset", asset_list, index=default_index, key='symbol')
-            symbol_to_use = selected_symbol
+            st.selectbox("Select Asset", asset_list, key='symbol')
         else:
             asset_list = ["NVDA", "TSLA", "AAPL", "GOOGL", "MSFT"]
-            selected_symbol_stock = st.selectbox("Select Asset (Stock)", asset_list, key='symbol_stock')
-            symbol_to_use = selected_symbol_stock
-        timeframes = ['1m','5m','15m','30m','1h','4h','1d','1w']
-        selected_timeframe = st.selectbox("Select Timeframe", timeframes, index=3, key='timeframe')
-        start_date_input = st.date_input("Backtest Start Date", value=datetime(2025, 1, 1), key='start_date')
-        st.subheader("Strategy Parameters")
-        p = st.session_state.params
-        with st.expander("Show/Hide Full Strategy Parameters"):
-            # All the parameter widgets remain the same
-            st.markdown("##### Parameter Strategi Utama")
-            p['ma_type'] = st.selectbox("Tipe Moving Average", ["SMA", "EMA"], index=["SMA", "EMA"].index(p['ma_type']), key='ma_type')
-            p['short_window'] = st.number_input("Periode MA Cepat", value=p['short_window'], min_value=1, key='short_window')
-            p['long_window'] = st.number_input("Periode MA Lambat", value=p['long_window'], min_value=1, key='long_window')
-            st.divider()
-            st.markdown("##### Parameter Indikator & Filter")
-            p['use_price_ma_filter'] = st.checkbox("Gunakan Filter Harga di Bawah MA?", value=p.get('use_price_ma_filter', True), key='use_price_ma_filter')
-            if p['use_price_ma_filter']:
-                c1,c2 = st.columns(2)
-                p['price_ma_filter_period'] = c1.number_input("Periode MA Filter", value=p['price_ma_filter_period'], key='price_ma_filter_period')
-                p['price_ma_filter_type'] = c2.selectbox("Tipe MA Filter", ["SMA", "EMA"], index=["SMA", "EMA"].index(p['price_ma_filter_type']), key='price_ma_filter_type')
-            p['use_rsi_filter'] = st.checkbox("Gunakan Filter RSI?", value=p.get('use_rsi_filter', True), key='use_rsi_filter')
-            if p['use_rsi_filter']:
-                p['rsi_period'] = st.number_input("Periode RSI", value=p['rsi_period'], key='rsi_period')
-                c1,c2 = st.columns(2)
-                p['rsi_buy_threshold'] = c1.number_input("RSI Beli <", value=p['rsi_buy_threshold'], key='rsi_buy_thresh')
-                p['rsi_sell_threshold'] = c2.number_input("RSI Jual >", value=p['rsi_sell_threshold'], key='rsi_sell_thresh')
-            # ... all other parameter widgets are the same
-            p['use_volume_filter'] = st.checkbox("Gunakan Filter Volume?", value=p.get('use_volume_filter', False), key='use_volume_filter')
-            if p['use_volume_filter']: p['volume_ma_period'] = st.number_input("Periode Volume MA", value=p['volume_ma_period'], key='volume_ma_period')
-            p['use_volatility_filter'] = st.checkbox("Gunakan Filter Volatilitas (ATR)?", value=p.get('use_volatility_filter', False), key='use_volatility_filter')
-            if p['use_volatility_filter']:
-                p['atr_period'] = st.number_input("Periode ATR", value=p['atr_period'], key='atr_period')
-                p['atr_min_value'] = st.number_input("Nilai ATR Minimum", value=p['atr_min_value'], format="%.2f", key='atr_min_value')
-            p['use_spread_filter'] = st.checkbox("Gunakan Filter Spread MA?", value=p.get('use_spread_filter', False), key='use_spread_filter')
-            if p['use_spread_filter']: p['spread_threshold'] = st.number_input("Ambang Batas Spread", value=p['spread_threshold'], format="%.4f", key='spread_threshold')
-            p['use_price_dist_filter'] = st.checkbox("Gunakan Filter Jarak Harga ke MA?", value=p.get('use_price_dist_filter', True), key='use_price_dist_filter')
-            if p['use_price_dist_filter']: p['price_dist_threshold'] = st.number_input("Ambang Batas Jarak (%)", value=p['price_dist_threshold'], format="%.4f", help="Value is a direct percentage, e.g., 0.2 means 0.2%", key='price_dist_threshold')
-            p['use_cooldown_filter'] = st.checkbox("Gunakan Filter Cooldown (Jeda Beli)?", value=p.get('use_cooldown_filter', False), key='use_cooldown_filter')
-            if p['use_cooldown_filter']: p['cooldown_bars'] = st.number_input("Jumlah Bar Cooldown", value=p['cooldown_bars'], key='cooldown_bars')
-            p['use_hold_duration_filter'] = st.checkbox("Gunakan Filter Durasi Hold?", value=p.get('use_hold_duration_filter', False), key='use_hold_duration_filter')
-            if p['use_hold_duration_filter']: p['min_hold_bars'] = st.number_input("Jumlah Bar Minimum Hold", value=p['min_hold_bars'], key='min_hold_bars')
-            st.divider()
-            st.markdown("##### Filter Slope untuk Sinyal Beli")
-            slope_options = ["Nonaktif", "Gunakan MA Strategi", "Gunakan MA Kustom"]
-            p['slope_filter_mode'] = st.selectbox("Mode Filter Slope", slope_options, index=slope_options.index(p.get('slope_filter_mode', 'Nonaktif')), key='slope_filter_mode')
-            if p['slope_filter_mode'] != 'Nonaktif':
-                if p['slope_filter_mode'] == "Gunakan MA Strategi":
-                     ma_source_options = ["MA Cepat", "MA Lambat"]
-                     p['strategy_ma_source'] = st.selectbox("   ↳ Sumber MA Strategi", ma_source_options, index=ma_source_options.index(p.get('strategy_ma_source', 'MA Cepat')), key='strategy_ma_source')
-                if p['slope_filter_mode'] == "Gunakan MA Kustom":
-                    p['custom_slope_ma_period'] = st.number_input("   ↳ Periode MA Kustom", value=p['custom_slope_ma_period'], key='custom_slope_ma_period')
-                    custom_ma_type_options = ["SMA", "EMA"]
-                    p['custom_slope_ma_type'] = st.selectbox("   ↳ Tipe MA Kustom", custom_ma_type_options, index=custom_ma_type_options.index(p.get('custom_slope_ma_type', 'EMA')), key='custom_slope_ma_type')
-                p['slope_threshold'] = st.number_input("   ↳ Ambang Batas Slope Minimum", value=p['slope_threshold'], format="%.2f", key='slope_threshold')
-            st.divider()
-            st.markdown("##### Manajemen Stop Loss & Exit")
-            p['use_stop_loss'] = st.checkbox("Gunakan Stop Loss?", value=p.get('use_stop_loss', True), key='use_stop_loss')
-            if p['use_stop_loss']: p['stop_loss_pct'] = st.number_input("Stop Loss (%)", value=p['stop_loss_pct'], format="%.2f", key='sl_pct')
-            p['use_recovery_exit'] = st.checkbox("Gunakan Recovery Exit?", value=p.get('use_recovery_exit', True), key='use_recovery_exit')
-            if p['use_recovery_exit']:
-                p['dip_pct_trigger'] = st.number_input("   ↳ Pemicu Penurunan Dalam (%)", value=p['dip_pct_trigger'], key='dip_trigger')
-                p['recovery_pct_threshold'] = st.number_input("   ↳ Ambang Batas Pemulihan (%)", value=p['recovery_pct_threshold'], key='recovery_thresh')
-            st.divider()
-            st.markdown("##### Manajemen Risiko & Ukuran Posisi")
-            p['base_position_pct'] = st.number_input("Persentase Modal Dasar (%)", value=p['base_position_pct'], key='base_pos_pct')
-            p['leverage_multiplier'] = st.number_input("Leverage", value=p['leverage_multiplier'], min_value=1.0, key='leverage')
-            p['use_size_down'] = st.checkbox("Aktifkan Aturan 'Size Down'?", value=p.get('use_size_down', True), key='use_size_down')
-            if p['use_size_down']: p['size_down_pct'] = st.number_input("   ↳ Kurangi Ukuran Sebesar (%)", value=p['size_down_pct'], key='size_down_pct')
-            p['use_fake_loss'] = st.checkbox("Aktifkan Aturan 'Fake Loss'?", value=p.get('use_fake_loss', True), key='use_fake_loss')
-            if p['use_fake_loss']: p['withdrawal_pct'] = st.number_input("   ↳ Persentase 'Penarikan' (%)", value=p['withdrawal_pct'], key='withdrawal_pct')
-        form_col1, form_col2 = st.columns(2)
-        run_button = form_col1.form_submit_button("🚀 Run Backtest", use_container_width=True)
-        add_alert_button = form_col2.form_submit_button("✅ Add as Live Alert", use_container_width=True)
-# ---> THIS IS THE FIX: Logic is now sequential and simpler <---
-# 1. Handle alert creation FIRST.
-if add_alert_button:
-    new_alert = {
-        "id": f"{symbol_to_use.replace('/', '')}_{selected_timeframe}_{int(time.time())}",
-        "symbol": symbol_to_use,
-        "timeframe": selected_timeframe,
-        "asset_type": asset_type.lower(),
-        "params": st.session_state.params.copy()
-    }
-    alerts.append(new_alert)
-    save_json('alerts.json', alerts)
-    st.success(f"Alert '{new_alert['id']}' added successfully!")
-    # We can still rerun to make the new alert appear instantly, it's safe now.
-    time.sleep(1) 
-    st.rerun()
-# 2. Display the active alerts panel.
-with col2:
-    st.header("2. Active Alerts")
-    if not alerts:
-        st.info("No active alerts. Create one using the form on the left.")
+            st.selectbox("Select Asset (Stock)", asset_list, key='symbol_stock')
+        st.selectbox("Select Timeframe", ['1m','5m','15m','30m','1h','4h','1d','1w'], key='timeframe')
+        st.date_input("Backtest Start Date", key='start_date')
+        st.date_input("Backtest End Date", key='end_date')
+
+    with st.expander("Strategy Parameters", expanded=False):
+        st.markdown("##### Parameter Strategi Utama")
+        st.selectbox("Tipe Moving Average", ["SMA", "EMA"], key='ma_type')
+        st.number_input("Periode MA Cepat", min_value=1, key='short_window')
+        st.number_input("Periode MA Lambat", min_value=1, key='long_window')
+        st.divider()
+        st.markdown("##### Parameter Indikator & Filter")
+        st.checkbox("Gunakan Filter Harga di Bawah MA?", key='use_price_ma_filter')
+        if st.session_state.get('use_price_ma_filter'):
+            c1, c2 = st.columns(2)
+            c1.number_input("Periode MA Filter", key='price_ma_filter_period')
+            c2.selectbox("Tipe MA Filter", ["SMA", "EMA"], key='price_ma_filter_type')
+        st.checkbox("Gunakan Filter RSI?", key='use_rsi_filter')
+        if st.session_state.get('use_rsi_filter'):
+            st.number_input("Periode RSI", key='rsi_period')
+            c1, c2 = st.columns(2)
+            c1.number_input("RSI Beli <", key='rsi_buy_threshold')
+            c2.number_input("RSI Jual >", key='rsi_sell_threshold')
+        st.checkbox("Gunakan Filter Volume?", key='use_volume_filter')
+        if st.session_state.get('use_volume_filter'):
+            st.number_input("Periode Volume MA", key='volume_ma_period')
+        # ... (all other parameter widgets follow the same correct pattern) ...
+        st.checkbox("Gunakan Filter Volatilitas (ATR)?", key='use_volatility_filter')
+        if st.session_state.get('use_volatility_filter'):
+            st.number_input("Periode ATR", key='atr_period')
+            st.number_input("Nilai ATR Minimum", format="%.2f", key='atr_min_value')
+        st.checkbox("Gunakan Filter Spread MA?", key='use_spread_filter')
+        if st.session_state.get('use_spread_filter'):
+            st.number_input("Ambang Batas Spread", format="%.4f", key='spread_threshold')
+        st.checkbox("Gunakan Filter Jarak Harga ke MA?", key='use_price_dist_filter')
+        if st.session_state.get('use_price_dist_filter'):
+            st.number_input("Ambang Batas Jarak (%)", format="%.4f", help="Value is a direct percentage, e.g., 0.2 means 0.2%", key='price_dist_threshold')
+        st.checkbox("Gunakan Filter Cooldown (Jeda Beli)?", key='use_cooldown_filter')
+        if st.session_state.get('use_cooldown_filter'):
+            st.number_input("Jumlah Bar Cooldown", key='cooldown_bars')
+        st.checkbox("Gunakan Filter Durasi Hold?", key='use_hold_duration_filter')
+        if st.session_state.get('use_hold_duration_filter'):
+            st.number_input("Jumlah Bar Minimum Hold", key='min_hold_bars')
+        st.divider()
+        st.markdown("##### Manajemen Stop Loss & Exit")
+        st.checkbox("Gunakan Stop Loss?", key='use_stop_loss')
+        if st.session_state.get('use_stop_loss'):
+            st.number_input("Stop Loss (%)", format="%.2f", key='stop_loss_pct')
+        st.checkbox("Gunakan Recovery Exit?", key='use_recovery_exit')
+        if st.session_state.get('use_recovery_exit'):
+            st.number_input("   -> Pemicu Penurunan Dalam (%)", key='dip_pct_trigger')
+            st.number_input("   -> Ambang Batas Pemulihan (%)", key='recovery_pct_threshold')
+        st.divider()
+        st.markdown("##### Manajemen Risiko & Ukuran Posisi")
+        st.number_input("Persentase Modal Dasar (%)", key='base_position_pct')
+        st.number_input("Leverage", min_value=1.0, key='leverage_multiplier')
+        st.checkbox("Aktifkan Aturan 'Size Down'?", key='use_size_down')
+        if st.session_state.get('use_size_down'):
+            st.number_input("   -> Kurangi Ukuran Sebesar (%)", key='size_down_pct')
+        st.checkbox("Aktifkan Aturan 'Fake Loss'?", key='use_fake_loss')
+        if st.session_state.get('use_fake_loss'):
+            st.number_input("   -> Persentase 'Penarikan' (%)", key='withdrawal_pct')
+
+
+    st.header("Actions")
+    run_button = st.button(":rocket: Run Backtest", use_container_width=True)
+    add_alert_button = st.button(":white_check_mark: Add as Live Alert", use_container_width=True)
+    st.divider()
+    optimize_button = st.button(":mag: Find Optimized Parameters", use_container_width=True)
+
+current_params = {key: st.session_state.get(key) for key in config.get('default_strategy_params', {}).keys()}
+symbol_to_use = st.session_state.symbol if st.session_state.asset_type == 'Crypto' else st.session_state.symbol_stock
+selected_timeframe = st.session_state.timeframe
+
+if 'last_run_results' not in st.session_state: st.session_state.last_run_results = None
+if 'optimization_results' not in st.session_state: st.session_state.optimization_results = None
+
+# --- NEW: Main panel section for pasting JSON from Colab ---
+st.header("⚡️ Load Optimized Parameters from Colab")
+colab_json_input = st.text_area(
+    "Paste JSON output from Google Colab here:",
+    height=200,
+    key="colab_json",
+    help="After running the optimizer in Colab, copy the final JSON block and paste it here."
+)
+if st.button("Load & Display Optimized Parameters"):
+    if colab_json_input:
+        try:
+            parsed_data = json.loads(colab_json_input)
+            st.session_state.optimization_results = pd.DataFrame(parsed_data)
+            st.session_state.last_run_results = None # Clear any previous backtest results
+            st.success("Successfully loaded optimization results! See table below.")
+            st.rerun()
+        except json.JSONDecodeError:
+            st.error("Invalid JSON format. Please copy the entire block from Colab, including `[` and `]`.")
+        except Exception as e:
+            st.error(f"An error occurred while loading the data: {e}")
     else:
-        # Use a copy for safe iteration while removing items
-        for i, alert in enumerate(alerts[:]):
-            with st.container(border=True):
-                c1, c2 = st.columns([3, 1])
-                c1.markdown(f"**ID:** `{alert['id']}`")
-                c1.markdown(f"**Asset:** {alert['symbol']} ({alert['timeframe']})")
-                if c2.button("❌ Remove", key=f"remove_{alert['id']}", use_container_width=True):
-                    alerts.pop(i)
-                    save_json('alerts.json', alerts)
-                    st.success(f"Alert '{alert['id']}' removed.")
-                    st.rerun()
+        st.warning("Text area is empty. Please paste the JSON from Colab.")
 
-# 3. Handle backtest execution and display LAST.
-st.header("3. Backtest Results")
+st.divider()
 
-if 'last_run_params' not in st.session_state: st.session_state.last_run_params = None
+if optimize_button:
+    st.session_state.last_run_results = None
+    with st.spinner(f"Running optimization..."):
+        st.session_state.optimization_results = run_optimization(symbol_to_use, st.session_state.asset_type.lower(), {"strategy_params": current_params, "backtest_settings": config.get('backtest_settings', {})})
+
 if run_button:
-    live_config = {
-        "strategy_params": st.session_state.params,
-        "backtest_settings": config.get('backtest_settings', {}),
-        "strategy_start_timestamp": pd.to_datetime(start_date_input).isoformat() + "Z"
-    }
-    with st.spinner(f"Running backtest for {symbol_to_use}..."):
-        results = run_backtest(symbol_to_use, asset_type.lower(), selected_timeframe, live_config)
+    st.session_state.optimization_results = None
+    live_config = {"strategy_params": current_params, "backtest_settings": config.get('backtest_settings', {}), "strategy_start_timestamp": pd.to_datetime(st.session_state.start_date).isoformat() + "Z", "strategy_end_timestamp": pd.to_datetime(st.session_state.end_date).isoformat() + "Z"}
+    with st.spinner(f"Running backtest..."):
+        st.session_state.last_run_results = run_backtest(symbol_to_use, st.session_state.asset_type.lower(), selected_timeframe, live_config)
+    st.session_state.last_run_config = live_config
 
-    # All results display logic is now nested inside the `if run_button:`
+results = st.session_state.get('last_run_results')
+live_config = st.session_state.get('last_run_config')
+optimization_results = st.session_state.get('optimization_results')
+
+if optimization_results is not None:
+    st.header("Top 5 Optimized Parameter Sets")
+    st.info("Click 'Load' to apply a parameter set, then run a detailed backtest.")
+    optimizer_config = load_json('optimizer_config.json', {})
+    date_range_space = optimizer_config.get('date_range_space', {})
+    edited_df = optimization_results.copy()
+    edited_df["Load"] = False
+    edited_df = st.data_editor(
+        edited_df,
+        column_config={"Load": st.column_config.CheckboxColumn(required=True)},
+        disabled=[col for col in optimization_results.columns],
+        hide_index=True,
+    )
+    if edited_df["Load"].any():
+        selected_row = edited_df[edited_df["Load"]].iloc[0]
+        params_to_load = {}
+        for param, value in selected_row.items():
+            if param == 'date_range_name':
+                params_to_load['start_date'] = pd.to_datetime(date_range_space[value]['start_date'])
+                params_to_load['end_date'] = pd.to_datetime(date_range_space[value]['end_date'])
+            elif param != 'Load' and param != 'Score':
+                 params_to_load[param] = value
+        st.session_state.params_to_load = params_to_load
+        st.session_state.optimization_results = None
+        st.rerun()
+
+elif results and live_config:
+    # --- THIS IS THE CORRECTED AND RESTORED DISPLAY LOGIC ---
+    st.header("Backtest Results")
     if "error" in results:
         st.error(results["error"])
-    elif "message" in results:
-        st.info(results["message"])
-        if "debug_info" in results:
-            debug_info = results['debug_info']
-            failed_counts = debug_info.get('failed_filter_counts', {})
-            st.subheader("🕵️ Debugging: Why No Trades?")
-            st.write(f"The backtester found **{debug_info.get('crossover_events_found', 0)}** potential buy signals (Golden Crosses), but they were all rejected by the active filters.")
-            if failed_counts:
-                st.write("Summary of which filters caused the rejections:")
-                failed_df = pd.DataFrame(list(failed_counts.items()), columns=['Filter That Failed', 'Rejection Count'])
-                failed_df = failed_df.sort_values(by='Rejection Count', ascending=False).reset_index(drop=True)
-                st.dataframe(failed_df, use_container_width=True)
-                
-                # ---> NEW: Display Detailed Log <---
-                detailed_log = debug_info.get('detailed_log', [])
-                if detailed_log:
-                    with st.expander("View Detailed Failure Log (First 20 Events)"):
-                        log_df = pd.DataFrame(detailed_log)
-                        st.dataframe(log_df, use_container_width=True)
-                        st.warning("The most common reason for filter failures is the indicator value being right on the threshold (e.g., RSI is 50.1 instead of <50) or an indicator being invalid (NaN) at the start of the test. This new backtester version fixes the NaN issue.")
+        st.session_state.last_run_results = None
     else:
-        # --- Display KPIs ---
-        metrics = results.get('metrics', {})
-        if metrics:
+        if 'historical_data' in results:
+            st.subheader("Trade Visualization")
+            df = pd.DataFrame.from_dict(results['historical_data'], orient='index')
+            df.index = pd.to_datetime(df.index)
+            trades_df = pd.DataFrame(results.get('trades', []))
+            st.plotly_chart(create_price_chart(df, trades_df, live_config['strategy_params'], "Asia/Jakarta"), use_container_width=True)
+
+        if 'metrics' in results and 'equity_curve' in results:
+            metrics = results['metrics']
+            st.subheader("Key Performance Indicators")
             kpi_cols = st.columns(5)
             kpi_cols[0].metric("Net Profit (%)", f"{metrics.get('net_profit_pct', 0):.2f}%")
             kpi_cols[1].metric("Total Trades", metrics.get('total_trades', 0))
             kpi_cols[2].metric("Win Rate (%)", f"{metrics.get('win_rate', 0):.2f}%")
             kpi_cols[3].metric("Max Drawdown", f"${metrics.get('max_drawdown', 0):,.2f} ({metrics.get('max_drawdown_pct', 0):.2f}%)")
             kpi_cols[4].metric("Profit Factor", f"{metrics.get('profit_factor', 0):.2f}")
-        
-        # --- Display Charts ---
-        if 'historical_data' in results and 'trades' in results:
-            st.subheader("Trade Visualization")
-            df = pd.DataFrame.from_dict(results['historical_data'], orient='index')
-            df.index = pd.to_datetime(df.index)
-            st.plotly_chart(create_price_chart(df, pd.DataFrame(results['trades']), "Asia/Jakarta"), use_container_width=True)
-        if 'equity_curve' in results:
+            
             st.subheader("Equity Curve Analysis")
-            show_bnh = st.checkbox("Show Buy & Hold Equity Comparison", value=True)
+            show_bnh = st.checkbox("Show Buy & Hold Equity Comparison", value=True, key="show_bnh")
             equity_df = pd.Series(results['equity_curve'])
             bnh_df = pd.Series(results['buy_and_hold_equity'])
             drawdown_df = pd.Series(results['drawdown_series'])
             st.plotly_chart(create_equity_chart(equity_df, bnh_df, drawdown_df, show_bnh, "Asia/Jakarta"), use_container_width=True)
-        
-        # --- Display Trade Log ---
-        with st.expander("View Trade Log"):
-            if 'trades' in results and results['trades']:
+            
+        if 'trades' in results and results.get('trades'):
+             with st.expander("View Detailed Trade Log", expanded=True):
                 st.dataframe(pd.DataFrame(results['trades']), use_container_width=True)
+        elif "message" in results:
+             st.info(results["message"])
+
 else:
-    # This message now shows by default if no backtest has been run
-    st.info("Configure a strategy and click 'Run Backtest' to see results.")
+    st.info("Open the sidebar, configure a strategy, and click 'Run Backtest' or 'Find Optimized Parameters'.")
+
+with st.expander("Show/Hide Active Alerts"):
+    if not alerts:
+        st.info("No active alerts. Add one from the sidebar.")
+    else:
+        for i, alert in enumerate(alerts[:]):
+            with st.container(border=True):
+                c1, c2 = st.columns([4, 1])
+                c1.markdown(f"**ID:** `{alert['id']}`")
+                c1.markdown(f"**Asset:** {alert['symbol']} ({alert['timeframe']})")
+                if c2.button(":x: Remove", key=f"remove_{alert['id']}", use_container_width=True):
+                    alerts.pop(i)
+                    save_json('alerts.json', alerts)
+                    st.success(f"Alert '{alert['id']}' removed.")
+                    st.rerun()

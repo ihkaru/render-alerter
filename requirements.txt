@@ -1,4 +1,4 @@
-numpy>=1.26.0,<2.0.0  # Pin to avoid pandas-ta compatibility issues
+numpy>=1.26.0,<2.0.0
 pandas>=2.2.0
 pandas-ta==0.3.14b0
 ccxt>=4.2.0
@@ -7,3 +7,4 @@ requests>=2.31.0
 schedule>=1.2.0
 streamlit
 plotly
+optuna

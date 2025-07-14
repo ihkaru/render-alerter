@@ -1,54 +1,49 @@
 # System Requirements Document: Personal Trading Alerter & Backtester
 
-**Version:** 4.0
-**Date:** July 12, 2025
+**Version:** 5.0
+**Date:** July 13, 2025
 **Author:** Gemini & User
-**Revision Note:** This version incorporates significant clarifications and logical refinements discovered during a comprehensive unit testing and debugging cycle. It represents the most accurate and validated system specification.
+**Revision Note:** This version introduces a powerful strategy optimization engine using Optuna for automated parameter discovery and robustness testing. The UI has been significantly refactored to a chart-centric, sidebar-based layout for improved usability, and includes on-chart indicator visualization.
 
 ## 1. Project Vision & Purpose
 
 This document outlines the system requirements for a personal, professional-grade quantitative trading analysis and alerting tool.
 
-The primary purpose of this system is to provide its user with a reliable, non-repainting backtesting engine and a persistent live alerting mechanism. It is designed to be a fully-owned alternative to cloud platforms, giving the user complete control over the strategy logic, data sources, and operational environment. The overarching goal is to enable rapid strategy iteration and validation to support the user's investment portfolio growth.
+The primary purpose of this system is to provide its user with a reliable, non-repainting backtesting engine and a persistent live alerting mechanism. It is designed to be a fully-owned alternative to cloud platforms, giving the user complete control over the strategy logic, data sources, and operational environment. The overarching goal is to enable rapid strategy iteration and validation to support the user's investment portfolio growth. Furthermore, it introduces an **automated optimization engine** to systematically discover robust strategy parameters, accelerating the validation process.
 
 ## 2. Core Philosophy & Guiding Principles
 
 The system is built upon several core principles that must be respected in all future development:
 
 - **Non-Repainting Logic:** All backtesting and alerting logic MUST avoid look-ahead bias. Decisions are made on the data of a fully closed "signal candle," and actions (trades, alerts) are executed on the open of the subsequent "action candle."
-
-- **(New & Clarified) Independent Exit Triggers vs. Filtered Entry:** The system's logic for entering and exiting positions is fundamentally different and MUST be respected.
-
-  - **Entry Logic (AND):** A trade is only entered if the primary signal (e.g., a Golden Cross) occurs **AND** it passes a sequential chain of all enabled buy-side filters (e.g., RSI, Volume, Slope, etc.). A failure at any step prevents entry.
-  - **Exit Logic (OR):** A trade is exited if **ANY** enabled exit condition is met. The conditions (Stop Loss, Recovery Exit, MA Slope-based Signal, RSI-based Signal) are evaluated independently. This ensures a protective stop loss, for example, is not blocked by another exit rule.
-
-- **(New) End-of-Period Position Closure:** At the conclusion of a backtest, any open position MUST be automatically closed at the `close` price of the final available candle to ensure final equity is accurately reflected. This is a non-negotiable backstop to correctly calculate final P/L.
-
-- **State Persistence:** The system must be resilient to restarts. The state of the live alerter (active positions) and the list of user-defined alerts are persisted to disk (`state.json`, `alerts.json`) and reloaded on startup.
-
-- **Configuration-Driven:** The system's behavior is primarily defined by user-editable JSON configuration files, not hardcoded values.
-
-- **Testability and Validation:** The system MUST be accompanied by a comprehensive suite of automated unit tests. These tests serve as a safety net to prevent regressions and validate that the core logic behaves exactly as specified by these requirements.
+- **Independent Exit Triggers vs. Filtered Entry:** The system's logic for entering and exiting positions is fundamentally different and MUST be respected.
+  - **Entry Logic (AND):** A trade is only entered if the primary signal (e.g., a Golden Cross) occurs **AND** it passes a sequential chain of all enabled buy-side filters.
+  - **Exit Logic (OR):** A trade is exited if **ANY** enabled exit condition is met. The conditions are evaluated independently.
+- **End-of-Period Position Closure:** At the conclusion of a backtest, any open position MUST be automatically closed at the `close` price of the final available candle.
+- **State Persistence:** The system must be resilient to restarts. The state of the live alerter and the list of user-defined alerts are persisted to disk.
+- **Configuration-Driven:** The system's behavior is primarily defined by user-editable JSON configuration files.
+- **Testability and Validation:** The system MUST be accompanied by a comprehensive suite of automated unit tests.
 
 ## 3. System Architecture & Technology Stack
 
 - **Language:** Python 3.10+
-- **Core Libraries:** pandas, numpy, pandas-ta, ccxt, yfinance, streamlit, plotly, schedule, requests
+- **Core Libraries:** pandas, numpy, pandas-ta, ccxt, yfinance, streamlit, plotly, schedule, requests, **optuna**
 - **Testing Stack:** pytest, pytest-mock
 - **Containerization:** Docker & Docker Compose
 
 ## 4. Data Flow & State Management
 
-- **Configuration:** `config.json`, `alerts.json`
+- **Configuration:** `config.json`, `alerts.json`, **`optimizer_config.json`**
 - **State:** `state.json`
-- **Backtesting Workflow:**
-  1. UI reads `config.json`.
-  2. User modifies parameters in the UI, creating a temporary `live_config` object.
-  3. `live_config` is passed to the `backtester` module.
-  4. The backtester fetches data, runs the simulation, and returns a results dictionary.
-  5. **(Updated)** The results dictionary is returned regardless of whether trades were executed.
-  6. The UI displays the results.
-- **Alerting Workflow:** The `alerter.py` script runs as a persistent background process, looping through `alerts.json` and checking for signals against the persistent state in `state.json`.
+- **Backtesting Workflow:** (Unchanged)
+- **Alerting Workflow:** (Unchanged)
+- **(New) Optimization Workflow:**
+  1. The UI reads `optimizer_config.json` to define the search space for parameters, timeframes, and historical date ranges.
+  2. The user initiates the optimization process from the UI.
+  3. The `optimizer` module, using Optuna, runs a series of backtests (`N` trials).
+  4. Each trial tests a unique combination of parameters and conditions (e.g., a specific timeframe over a specific historical market regime).
+  5. The optimizer evaluates each trial based on a balanced score and returns a DataFrame of the top N best-performing parameter sets.
+  6. The UI displays these results in a table, allowing the user to load any set of parameters back into the main controls for detailed analysis or live alerting.
 
 ## 5. Functional Requirements (Features)
 
@@ -74,6 +69,7 @@ The system is built upon several core principles that must be respected in all f
 - **F1.6: Backtest Debugging Output:** If a backtest results in zero trades, the `debug_info` object MUST contain the count of primary buy signals and a breakdown of which filters caused the rejections.
 
 - **F1.7: (New & Validated) End-of-Period Position Closure:** If a position is still open when historical data is exhausted, the backtester MUST automatically close the trade at the `close` price of the final candle.
+- **(New) F1.8: Backtest over Specific Date Ranges:** The backtesting engine must accept an optional `end_date` to allow for analysis of specific historical periods (e.g., bull or bear markets).
 
 #### F2: Live Alerting Service
 
@@ -99,25 +95,36 @@ The system is built upon several core principles that must be respected in all f
 - **F5.1: Buy and Hold Comparison:** The backtester MUST calculate the full equity curve for a simple "Buy and Hold" strategy over the same period for comparison.
 - **F5.2: Drawdown Calculation:** The backtester MUST calculate the portfolio's drawdown series and identify the maximum drawdown value ($) and percentage (%).
 
+#### (New) F6: Strategy Optimization Engine
+
+- **F6.1: Automated Parameter Search:** The system MUST use the Optuna library to intelligently search for optimal strategy parameters, efficiently exploring the defined search space.
+- **F6.2: Configurable Search Space:** The search space for the optimizer—including parameter ranges, categorical choices (like MA type), timeframes, and named date ranges—MUST be defined in the `optimizer_config.json` file.
+- **F6.3: Robustness Testing (Market Regimes):** The optimizer MUST be able to run trials across different, pre-defined historical date ranges (e.g., "Bull_Run_2021", "Bear_Market_2022") to find parameters that are robust across various market conditions.
+- **F6.4: Multi-Objective Scoring:** The optimizer MUST evaluate each backtest trial using a single, balanced score metric that rewards profitability and stability while penalizing high drawdowns (e.g., `Score = (Profit Factor * Win Rate) / Max Drawdown %`).
+- **F6.5: Top Results Display:** The optimizer MUST return the top 5 best-performing parameter sets, including the timeframe and date range tested, as a DataFrame for display in the UI.
+
 ## 6. User Interface (UI) Requirements
 
 The application UI is a web-based dashboard built with Streamlit.
 
 #### UR1: Layout
 
-- **UR1.1 (Left Column - The Control Panel):** Contains a single form (`st.form`) for configuring a strategy, including asset/timeframe selection and all strategy parameters. It has two action buttons: "Run Backtest" and "Add as Live Alert."
-- **UR1.2 (Right Column - The Status Panel):** Displays the list of currently active alerts from `alerts.json`. Each alert has a "Remove" button.
+- **(Updated) UR1.1: Sidebar Control Panel:** All strategy configuration widgets (asset/timeframe selection, all strategy parameters) and primary action buttons ("Run Backtest", "Add as Live Alert", "Find Optimized Parameters") MUST be located in a collapsible `st.sidebar`.
+- **(Updated) UR1.2: Main Display Area:** The main area of the application is dedicated to displaying the output of a user action, which is either the detailed backtest results or the strategy optimization results table.
+- **(Updated) UR1.3: Collapsible Alerts Panel:** The list of currently active alerts from `alerts.json` MUST be displayed in a collapsible `st.expander` at the bottom of the main page.
 
 #### UR2: Backtest Results
 
-- **UR2.1 (KPIs):** Key Performance Indicators MUST be displayed prominently, including: Net Profit (%), Total Trades, Win Rate (%), Profit Factor, and **Max Drawdown ($ and %)**.
-- **UR2.2 (Interactive Price Chart):** A Plotly candlestick chart must display the price action for the backtested period, with visual markers for all buy and sell trades.
-- **UR2.3 (Equity Analysis Chart):** A dedicated, interactive Plotly chart for the portfolio equity must display:
-  - `UR2.3.1:` The strategy's equity curve as a primary line graph.
-  - `UR2.3.2:` The "Buy and Hold" equity curve as a dashed line. This MUST be toggleable with a checkbox on the UI.
-  - `UR2.3.3:` The portfolio's drawdown over time, visualized as a secondary area graph on the same chart.
-- **UR2.4: (Updated) Debugging & No-Trade Display:** If a backtest produces no trades, the UI MUST display the debugging information from F1.6. It should STILL render the price chart (UR2.2) using the `historical_data` that is always returned.
-- **UR2.5 (Trade Log):** A collapsible, detailed table of every trade executed during the backtest must be available. **(Updated)** The underlying data for this log now contains the `entry_size_usd` for potential display.
+- **UR2.1 (KPIs):** Key Performance Indicators MUST be displayed prominently.
+- **(Updated) UR2.2 (Interactive Price Chart):** A Plotly candlestick chart must display the price action, trade markers, **and key strategy indicators** (e.g., short and long-term moving averages) plotted directly on the price series.
+- **UR2.3 (Equity Analysis Chart):** A dedicated, interactive Plotly chart must display the portfolio equity curve and drawdown.
+- **UR2.4 (Debugging & No-Trade Display):** If a backtest produces no trades, the UI MUST still render the price chart and display the debugging information.
+- **UR2.5 (Trade Log):** A collapsible, detailed table of every trade executed must be available.
+
+#### (New) UR3: Optimization Results
+
+- **UR3.1: Top 5 Results Table:** The UI must display the results from the optimizer (F6.5) in a clear, interactive table format (e.g., `st.data_editor`).
+- **UR3.2: Interactive Parameter Loading:** Each row in the optimization results table MUST have a "Load" button. Clicking this button MUST instantly update all corresponding control widgets in the sidebar (UR1.1) to match the values from that row, including the `timeframe` and `start_date`/`end_date` widgets.
 
 ## 7. Non-Functional Requirements
 

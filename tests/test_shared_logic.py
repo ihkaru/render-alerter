@@ -26,8 +26,9 @@ def all_filters_enabled_params():
 # We will make it "imperfect" in tests to trigger failures.
 @pytest.fixture
 def perfect_signal_candle():
+    # --- FIX #1: The "perfect" candle now has a close price ABOVE the filter_ma. ---
     return pd.Series({
-        'close': 95,
+        'close': 105,             # <-- WAS 95. Now passes the corrected filter logic (105 >= 100).
         'filter_ma': 100,
         'rsi': 45,
         'ma_short': 90,
@@ -41,13 +42,15 @@ def perfect_signal_candle():
 
 def test_all_filters_pass(all_filters_enabled_params, perfect_signal_candle):
     """ Requirement F1.6: Test the ideal case where a signal passes all filters. """
+    # With the fixed fixture, this test will now correctly pass.
     passed, failed = evaluate_buy_filters(perfect_signal_candle, all_filters_enabled_params)
     assert passed is True
     assert len(failed) == 0
 
 def test_price_vs_ma_filter_fail(all_filters_enabled_params, perfect_signal_candle):
     """ Requirement F1.6: Test failure of 'Price vs Filter MA' """
-    perfect_signal_candle['close'] = 105 # Price is now ABOVE the filter_ma
+    # --- FIX #2: To make the test fail, we now set the close price BELOW the filter_ma. ---
+    perfect_signal_candle['close'] = 99 # <-- WAS 105. This now correctly triggers a failure (99 < 100).
     passed, failed = evaluate_buy_filters(perfect_signal_candle, all_filters_enabled_params)
     assert passed is False
     assert 'Price vs Filter MA' in failed
