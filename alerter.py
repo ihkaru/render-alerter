@@ -1,5 +1,5 @@
 import os
-import json # <--- FIX: Ensured import is present
+import json
 import time
 import logging
 import schedule
@@ -77,10 +77,13 @@ def main_job():
                 if is_golden_cross:
                     all_filters_passed, _ = evaluate_buy_filters(signal_candle, params)
                     if all_filters_passed:
-                        message = (f"🚀 *LIVE BUY SIGNAL* 🚀\n\n"
+                        rsi_value = signal_candle.get('rsi')
+                        rsi_str = f"{rsi_value:.2f}" if rsi_value is not None and pd.notna(rsi_value) else "N/A"
+                        message = (f"ðŸš€ *LIVE BUY SIGNAL* ðŸš€\n\n"
                                    f"*Alert ID:* `{alert_id}`\n"
                                    f"*Asset:* `{symbol}` ({timeframe})\n"
-                                   f"*Signal Price:* `{signal_candle['close']:.4f}`")
+                                   f"*Signal Price:* `{signal_candle['close']:.4f}`\n"
+                                   f"*RSI:* `{rsi_str}`")
                         send_telegram_alert(message)
                         
                         state[alert_id] = {'in_position': True, 'entry_price': signal_candle['close'], 'has_dipped_deep': False, 'entry_bar_index': len(df)-2}
@@ -89,30 +92,43 @@ def main_job():
                 entry_price = alert_state.get('entry_price', 0)
                 if entry_price == 0: continue
 
+                exit_triggered, reason = False, ""
+                
                 is_recovery_exit_triggered = False
                 if params.get('use_recovery_exit'):
                     has_dipped = alert_state.get('has_dipped_deep', False)
                     if not has_dipped and (entry_price - signal_candle['close']) / entry_price * 100 >= params.get('dip_pct_trigger', 2.0):
                         alert_state['has_dipped_deep'] = True
                         has_dipped = True
-                    if has_dipped:
-                        recovery_diff_pct = abs(signal_candle['close'] - entry_price) / entry_price * 100
-                        if recovery_diff_pct <= params.get('recovery_pct_threshold', 0.0):
-                            is_recovery_exit_triggered = True
+                    if has_dipped and abs(signal_candle['close'] - entry_price) / entry_price * 100 <= params.get('recovery_pct_threshold', 0.0):
+                        is_recovery_exit_triggered = True
 
-                is_sell_trigger = signal_candle.get('ma_short_slope', 0) <= 0
-                pass_rsi_sell = not params.get('use_rsi_filter') or (signal_candle.get('rsi', 0) > params.get('rsi_sell_threshold', 100))
-                bars_held = (len(df)-2) - alert_state.get('entry_bar_index', len(df)-2)
-                pass_hold = not params.get('use_hold_duration_filter') or (bars_held >= params.get('min_hold_bars', 0))
-                sell_signal_normal = is_sell_trigger and pass_rsi_sell and pass_hold
+                if is_recovery_exit_triggered:
+                    exit_triggered, reason = True, "Recovery Exit"
+                else:
+                    # --- MODIFICATION START: Combined MA Slope and RSI sell logic ---
+                    bars_held = (len(df)-2) - alert_state.get('entry_bar_index', len(df)-2)
+                    pass_hold_filter = not params.get('use_hold_duration_filter') or (bars_held >= params.get('min_hold_bars', 0))
+
+                    if pass_hold_filter:
+                        is_ma_slope_sell = signal_candle.get('ma_short_slope', 0) <= 0
+                        
+                        passes_rsi_sell_filter = not params.get('use_rsi_filter') or \
+                                                 (signal_candle.get('rsi', 0) >= params.get('rsi_sell_threshold', 100))
+
+                        if is_ma_slope_sell and passes_rsi_sell_filter:
+                            exit_triggered, reason = True, "Sell Signal"
+                    # --- MODIFICATION END ---
                 
-                if sell_signal_normal or is_recovery_exit_triggered:
+                if exit_triggered:
                     profit_pct = (signal_candle['close'] - entry_price) / entry_price * 100
-                    reason = "Recovery Exit" if is_recovery_exit_triggered else "Sell Signal"
-                    message = (f"🛑 *LIVE SELL SIGNAL ({reason})* 🛑\n\n"
+                    rsi_value = signal_candle.get('rsi')
+                    rsi_str = f"{rsi_value:.2f}" if rsi_value is not None and pd.notna(rsi_value) else "N/A"
+                    message = (f"ðŸ›‘ *LIVE SELL SIGNAL ({reason})* ðŸ›‘\n\n"
                                f"*Alert ID:* `{alert_id}`\n*Asset:* `{symbol}`\n"
                                f"*Exit Price:* `{signal_candle['close']:.4f}`\n*Entry Price:* `{entry_price:.4f}`\n"
-                               f"*P/L:* `{profit_pct:.2f}%`")
+                               f"*P/L:* `{profit_pct:.2f}%`\n"
+                               f"*RSI:* `{rsi_str}`")
                     send_telegram_alert(message)
                     
                     state[alert_id] = {'in_position': False}

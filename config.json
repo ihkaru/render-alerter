@@ -1,8 +1,8 @@
 {
     "telegram": { "enabled": true },
-    "ccxt_exchange_id": "binance",
+    "ccxt_exchange_id": "binanceus",
     "binance_api_ip": "18.64.23.181",
-    "scan_interval_minutes": 15,
+    "scan_interval_minutes": 5,
     "backtest_settings": {
       "initial_capital": 100,
       "commission_pct": 0.1

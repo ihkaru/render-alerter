@@ -131,16 +131,10 @@ def test_commission_calculation(mocker, sample_config):
     assert len(results['trades']) > 0
     trade = results['trades'][0]
     
-    # We need a predictable entry size. Let's assume 95% of initial capital based on config
     initial_capital = sample_config['backtest_settings']['initial_capital']
-    # The logic uses 95% as a base, so let's use that for calculation.
-    # Note: this is a simplification, a more robust test would mock the exact equity value.
-    entry_value_approx = initial_capital * 0.95 
-    # The actual entry size is calculated inside, let's use the one from the results for precision
     actual_entry_size = trade['entry_size_usd']
     exit_value = (actual_entry_size / trade['entry_price']) * trade['exit_price']
     
-    # Commission is 0.1% on entry and 0.1% on exit
     expected_commission = (actual_entry_size + exit_value) * (sample_config['backtest_settings']['commission_pct'] / 100.0)
     
     assert "commission" in trade
@@ -149,32 +143,20 @@ def test_commission_calculation(mocker, sample_config):
 def test_risk_management_size_down_on_loss(mocker, sample_config):
     """ Requirement F1.3: Ensure 'Size Down' rule reduces position size after a loss. """
     # ARRANGE
-    # This data is now mathematically verified to produce the required signals.
-    # It creates a BUY, then a SELL at a loss, then a second BUY.
     data = {
         'timestamp': pd.to_datetime([
             '2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05',
-            '2024-01-06', # Lookbehind 1: ma_short < ma_long
-            '2024-01-07', # Signal 1: ma_short > ma_long (BUY)
-            '2024-01-08', # Action 1 (Buy)
-            '2024-01-09',
-            '2024-01-10', # Signal 2: ma_short_slope becomes negative (SELL)
-            '2024-01-11', # Action 2 (Sell)
-            '2024-01-12',
-            '2024-01-13',
-            '2024-01-14', # Lookbehind 2
-            '2024-01-15', # Signal 3 (BUY again)
-            '2024-01-16', # Action 3 (Buy again)
-            '2024-01-17'  # Final candle to close the last trade
+            '2024-01-06', '2024-01-07', '2024-01-08', '2024-01-09',
+            '2024-01-10', '2024-01-11', '2024-01-12', '2024-01-13',
+            '2024-01-14', '2024-01-15', '2024-01-16', '2024-01-17'
         ]),
-        'open':  [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 98, 100, 100, 100, 100, 100, 100], # sell open is 98 to force loss
+        'open':  [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 98, 100, 100, 100, 100, 100, 100],
         'high': [100]*17, 'low': [100]*17, 'volume':[1000]*17,
         'close': [105, 104, 103, 102, 101, 100, 110, 115, 112, 110, 95, 96, 97, 98, 115, 120, 121],
     }
     full_df = pd.DataFrame(data).set_index('timestamp').tz_localize('UTC')
     mocker.patch('backtester.fetch_full_historical_data', return_value=full_df)
 
-    # Configure parameters
     sample_config['strategy_params']['use_rsi_filter'] = False
     sample_config['strategy_params']['use_stop_loss'] = False
     sample_config['strategy_params']['use_size_down'] = True
@@ -198,49 +180,35 @@ def test_risk_management_size_down_on_loss(mocker, sample_config):
     assert 'entry_size_usd' in first_trade
     assert 'entry_size_usd' in second_trade
 
-    # The first trade should use 100% of initial capital (minus a tiny bit for safety, hence approx)
     assert first_trade['entry_size_usd'] == pytest.approx(10000, rel=1e-9)
 
-    # After the loss, equity is reduced. The next trade size should be scaled down.
     equity_after_loss = 10000 + first_trade['profit']
-    size_factor = 0.50 # from size_down_pct
-    base_position_pct = 1.0 # from base_position_pct
+    size_factor = 0.50
+    base_position_pct = 1.0
     expected_second_trade_size = equity_after_loss * base_position_pct * size_factor
 
     assert second_trade['entry_size_usd'] == pytest.approx(expected_second_trade_size, rel=1e-9)
 
-# --- NEW TESTS START HERE ---
-
 def test_end_of_period_position_closure(mocker, sample_config):
-    """ (FIXED) F1.7: Test if an open position is closed on the last candle. """
-    # ARRANGE
+    """ F1.7: Test if an open position is closed on the last candle. """
     mock_df = create_mock_dataframe()
-    # Create a BUY signal on 2024-01-07
     mock_df.loc['2024-01-06', 'close'] = 100
     mock_df.loc['2024-01-07', 'close'] = 115
-
-    # **** KEY FIX ****
-    # Ensure no natural SELL signal is generated. We will force the price to
-    # rise steadily, guaranteeing the 3-period MA slope remains positive.
     mock_df.loc['2024-01-08', 'close'] = 120
     mock_df.loc['2024-01-09', 'close'] = 125
     mock_df.loc['2024-01-10', 'close'] = 130
     mock_df.loc['2024-01-11', 'close'] = 135
-    mock_df.loc['2024-01-12', 'close'] = 140 # This is the final candle
+    mock_df.loc['2024-01-12', 'close'] = 140
 
     mocker.patch('backtester.fetch_full_historical_data', return_value=mock_df)
     sample_config['strategy_params']['use_rsi_filter'] = False
     sample_config['strategy_params']['use_stop_loss'] = False
 
-    # **** DEBUGGING STEP ****
-    # Calculate indicators on our mock data to verify our assumptions
     debug_indicators = calculate_indicators(mock_df.copy(), sample_config['strategy_params'])
-    debug_df(debug_indicators.iloc[-5:], "End of Period Closure Data") # Print last 5 rows
+    debug_df(debug_indicators.iloc[-5:], "End of Period Closure Data")
 
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
 
-    # ASSERT
     assert "error" not in results, f"Backtest failed with error: {results.get('error')}"
     assert len(results['trades']) == 1, "A trade should have been opened and force-closed"
     trade = results['trades'][0]
@@ -248,7 +216,6 @@ def test_end_of_period_position_closure(mocker, sample_config):
     last_candle_close = mock_df['close'].iloc[-1]
     last_candle_ts = mock_df.index[-1]
 
-    # This assertion is now the primary goal
     assert trade['reason'] == "End of Backtest"
     assert trade['exit_price'] == last_candle_close
     assert trade['exit_ts'] == last_candle_ts
@@ -259,9 +226,7 @@ def test_end_of_period_position_closure(mocker, sample_config):
 
 def test_stop_loss_trigger_on_low(mocker, sample_config):
     """ Requirement F1.3: Test if stop loss triggers on the candle's LOW price. """
-    # ARRANGE
     mock_df = create_mock_dataframe()
-    # Create a BUY signal
     mock_df.loc['2024-01-06', 'close'] = 100
     mock_df.loc['2024-01-07', 'close'] = 115
     mocker.patch('backtester.fetch_full_historical_data', return_value=mock_df)
@@ -270,55 +235,34 @@ def test_stop_loss_trigger_on_low(mocker, sample_config):
     sample_config['strategy_params']['use_stop_loss'] = True
     sample_config['strategy_params']['stop_loss_pct'] = 10.0
     
-    # The trade enters on 2024-01-08 at open price of 115.
-    # A 10% stop loss would be at 115 * (1 - 0.10) = 103.5
     expected_sl_price = 115 * 0.9
     
-    # Modify the NEXT candle (2024-01-09) to trigger the SL on its low
-    mock_df.loc['2024-01-09', 'open'] = 114  # Open is above SL
-    mock_df.loc['2024-01-09', 'low'] = 103   # Low is BELOW SL
-    mock_df.loc['2024-01-09', 'close'] = 113 # Close is above SL
+    mock_df.loc['2024-01-09', 'open'] = 114
+    mock_df.loc['2024-01-09', 'low'] = 103
+    mock_df.loc['2024-01-09', 'close'] = 113
 
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
 
-    # ASSERT
     assert "error" not in results
     assert len(results['trades']) == 1, "A trade should have been stopped out"
     trade = results['trades'][0]
 
     assert trade['reason'] == "Stop Loss"
-    # The exit price must be the SL level itself, not the open or close.
     assert trade['exit_price'] == expected_sl_price
     assert trade['exit_ts'] == pd.Timestamp('2024-01-09 00:00:00+0000', tz='UTC')
 
 
 def test_cooldown_filter_prevents_buy(mocker, sample_config):
-    """ (FINAL) F1.3: Test 'Cooldown Period' filter rejects a new buy signal. """
-    # ARRANGE
-    # This data creates a clear BUY->SELL cycle, followed immediately by
-    # another BUY signal that falls squarely within the cooldown period.
+    """ F1.3: Test 'Cooldown Period' filter rejects a new buy signal. """
     data = {
         'timestamp': pd.to_datetime([
             '2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05',
-            # --- First BUY Signal ---
-            '2024-01-06', # Lookbehind candle
-            '2024-01-07', # Signal candle (Golden Cross)
-            '2024-01-08', # Action candle (Buy executes here)
-            # --- First SELL Signal ---
-            '2024-01-09', # Price peaks
-            '2024-01-10', # Signal candle (MA slope turns negative)
-            '2024-01-11', # Action candle (Sell executes here)
-            # --- Second BUY Signal (to be blocked) ---
-            '2024-01-12', # Lookbehind candle for 2nd buy. Cooldown bar #1.
-            '2024-01-13', # Signal candle (Golden Cross). Cooldown bar #2.
-            '2024-01-14', # Action candle (Should NOT trade). Cooldown bar #3.
+            '2024-01-06', '2024-01-07', '2024-01-08',
+            '2024-01-09', '2024-01-10', '2024-01-11',
+            '2024-01-12', '2024-01-13', '2024-01-14',
         ]),
         'open':  [100]*14, 'high': [100]*14, 'low': [100]*14, 'volume':[1000]*14,
-        'close': [100, 100, 100, 100, 100,  # 1. Initial flat data to stabilize MAs
-                  100, 115, 120,           # 2. Clear BUY sequence
-                  122, 110, 108,           # 3. Clear SELL sequence
-                  107, 125, 130],          # 4. Clear 2nd BUY sequence
+        'close': [100, 100, 100, 100, 100, 100, 115, 120, 122, 110, 108, 107, 125, 130],
     }
     df = pd.DataFrame(data).set_index('timestamp').tz_localize('UTC')
     mocker.patch('backtester.fetch_full_historical_data', return_value=df)
@@ -327,23 +271,17 @@ def test_cooldown_filter_prevents_buy(mocker, sample_config):
         'use_rsi_filter': False,
         'use_stop_loss': False,
         'use_cooldown_filter': True,
-        'cooldown_bars': 3 # A 3-bar cooldown.
+        'cooldown_bars': 3
     })
 
-    # **** DEBUGGING STEP ****
     debug_indicators = calculate_indicators(df.copy(), sample_config['strategy_params'])
     debug_df(debug_indicators, "Final Cooldown Filter Data")
 
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
 
-    # ASSERT
-    # The new buy signal on 2024-01-13 is only 2 bars after the exit on 2024-01-11.
-    # The check `2 < 3` will be TRUE, so the trade must be blocked.
     assert "trades" in results, f"Backtest failed or produced no trades. Debug info: {results.get('debug_info')}"
     assert len(results['trades']) == 1, "Only the first trade should execute due to the cooldown filter"
 
-    # Verify the trade that *did* happen is the correct one.
     trade = results['trades'][0]
     assert trade['entry_ts'] == pd.Timestamp('2024-01-08 00:00:00+0000', tz='UTC')
     assert trade['exit_ts'] == pd.Timestamp('2024-01-11 00:00:00+0000', tz='UTC')
@@ -351,18 +289,13 @@ def test_cooldown_filter_prevents_buy(mocker, sample_config):
 
 
 def test_risk_management_fake_loss_rule(mocker, sample_config):
-    """ (FIXED) F1.3: Test 'Fake Loss' rule reduces equity used for sizing. """
-    # ARRANGE
-    # This data ensures the first trade is profitable.
+    """ F1.3: Test 'Fake Loss' rule reduces equity used for sizing. """
     data = {
         'timestamp': pd.to_datetime([
             '2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05',
-            '2024-01-06', '2024-01-07', # BUY signal 1
-            '2024-01-08', '2024-01-09', # Profitable Trade
-            '2024-01-10', '2024-01-11', # SELL signal 1
-            '2024-01-12', '2024-01-13',
-            '2024-01-14', '2024-01-15', # BUY signal 2
-            '2024-01-16',
+            '2024-01-06', '2024-01-07', '2024-01-08', '2024-01-09',
+            '2024-01-10', '2024-01-11', '2024-01-12', '2024-01-13',
+            '2024-01-14', '2024-01-15', '2024-01-16',
         ]),
         'open':  [100, 100, 100, 100, 100, 100, 100, 116, 120, 125, 122, 126, 105, 112, 100, 100],
         'high': [100]*16, 'low': [100]*16, 'volume':[1000]*16,
@@ -378,10 +311,8 @@ def test_risk_management_fake_loss_rule(mocker, sample_config):
     })
     sample_config['backtest_settings'].update({'commission_pct': 0.0, 'initial_capital': 10000})
 
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
 
-    # ASSERT
     assert "trades" in results and len(results['trades']) == 2
     first_trade, second_trade = results['trades']
 
@@ -398,18 +329,12 @@ def test_risk_management_fake_loss_rule(mocker, sample_config):
     assert second_trade['entry_size_usd'] == pytest.approx(expected_second_trade_size)
 
 def test_recovery_exit_trigger(mocker, sample_config):
-    """ (FINAL, ISOLATED & VERIFIED) F1.3: Test 'Recovery Exit' triggers correctly. """
-    # ARRANGE
-    # This data is mathematically verified to create a golden cross, then dip and recover.
+    """ F1.3: Test 'Recovery Exit' triggers correctly. """
     data = {
         'timestamp': pd.to_datetime([
             '2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04',
-            '2024-01-05', # Lookbehind: ma_short < ma_long
-            '2024-01-06', # Signal: ma_short > ma_long
-            '2024-01-07', # Action: Buy @ 100
-            '2024-01-08', # Price Dips > 2% (has_dipped_deep=True).
-            '2024-01-09', # Price Recovers to < 0.1% loss.
-            '2024-01-10', # Action: Sell @ 100 due to recovery signal.
+            '2024-01-05', '2024-01-06', '2024-01-07',
+            '2024-01-08', '2024-01-09', '2024-01-10',
         ]),
         'open':  [100]*10, 'high': [100]*10, 'low': [100]*10, 'volume':[1000]*10,
         'close': [102, 101, 100, 99, 98, 115, 100, 97, 99.95, 100],
@@ -423,23 +348,17 @@ def test_recovery_exit_trigger(mocker, sample_config):
         'use_recovery_exit': True,
         'dip_pct_trigger': 2.0,
         'recovery_pct_threshold': 0.1,
-        # --- THE CRITICAL FIX ---
-        # We disable the standard sell signal by setting an impossibly long hold duration.
-        # This forces the backtester to ONLY evaluate the recovery exit logic.
         'use_hold_duration_filter': True,
         'min_hold_bars': 100,
     })
     sample_config['backtest_settings']['commission_pct'] = 0.0
     sample_config['strategy_start_timestamp'] = "2024-01-01T00:00:00Z"
 
-    # **** DEBUGGING STEP ****
     debug_indicators = calculate_indicators(df.copy(), sample_config['strategy_params'])
     debug_df(debug_indicators, "Final Isolated Recovery Exit Data")
 
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
 
-    # ASSERT
     logging.info(f"Test Results: {results}")
     assert "trades" in results and len(results['trades']) == 1, f"Expected 1 trade, but got results: {results}"
     trade = results['trades'][0]
@@ -452,21 +371,15 @@ def test_recovery_exit_trigger(mocker, sample_config):
 
 
 def test_indicator_warmup_delays_start(mocker, sample_config):
-    """ (FIXED) F1.4: Test that backtest start is aligned with valid indicators. """
-    # ARRANGE
+    """ F1.4: Test that backtest start is aligned with valid indicators. """
     mock_df = create_mock_dataframe()
     mocker.patch('backtester.fetch_full_historical_data', return_value=mock_df)
 
     sample_config['strategy_start_timestamp'] = "2024-01-03T00:00:00Z"
     sample_config['strategy_params']['long_window'] = 5
 
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
 
-    # ASSERT
-    # This test no longer depends on a trade. It directly checks if the
-    # historical data used by the backtest was correctly sliced to begin
-    # only after the longest MA (5 periods) is valid.
     assert "historical_data" in results, "Backtest should return historical_data even if no trades."
     
     historical_data_df = pd.DataFrame.from_dict(results['historical_data'], orient='index')
@@ -474,7 +387,6 @@ def test_indicator_warmup_delays_start(mocker, sample_config):
 
     actual_start_ts = historical_data_df.index.min()
     
-    # On the mock_df, the 5-period SMA is first non-NaN on 2024-01-05
     expected_actual_start_ts = pd.Timestamp("2024-01-05T00:00:00Z")
 
     logging.info(f"User requested start: {sample_config['strategy_start_timestamp']}")
@@ -484,14 +396,12 @@ def test_indicator_warmup_delays_start(mocker, sample_config):
     assert actual_start_ts == expected_actual_start_ts
 
 def test_min_hold_duration_prevents_early_exit(mocker, sample_config):
-    """ (FIXED) F1.3/F2.3: Test 'min_hold_bars' prevents a premature sell signal. """
-    # ARRANGE
-    # This data creates a BUY signal, then an immediate SELL signal one bar later.
+    """ F1.3/F2.3: Test 'min_hold_bars' prevents a premature sell signal. """
     data = {
         'timestamp': pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04',
                                      '2024-01-05', '2024-01-06', '2024-01-07', '2024-01-08']),
         'open':  [100]*8, 'high': [100]*8, 'low': [100]*8, 'volume':[1000]*8,
-        'close': [102, 101, 100, 99, 98, 115, 100, 101], # Creates cross, then immediate sell signal
+        'close': [102, 101, 100, 99, 98, 115, 100, 101],
     }
     df = pd.DataFrame(data).set_index('timestamp').tz_localize('UTC')
     mocker.patch('backtester.fetch_full_historical_data', return_value=df)
@@ -503,10 +413,8 @@ def test_min_hold_duration_prevents_early_exit(mocker, sample_config):
     })
     sample_config['strategy_start_timestamp'] = "2024-01-01T00:00:00Z"
 
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
 
-    # ASSERT
     assert "trades" in results and len(results['trades']) == 1, f"Test failed. Results: {results}"
     trade = results['trades'][0]
     
@@ -516,42 +424,42 @@ def test_min_hold_duration_prevents_early_exit(mocker, sample_config):
     assert trade['exit_ts'] == pd.Timestamp('2024-01-08 00:00:00+0000', tz='UTC')
 
 
-
-def test_rsi_sell_filter_triggers_exit(mocker, sample_config):
-    """ (FINAL, VERIFIED & ISOLATED) F1.3/F2.3: Test RSI Sell filter triggers an exit. """
+def test_sell_signal_filtered_by_rsi(mocker, sample_config):
+    """ F1.3/F2.3: Test Sell signal (MA Slope AND RSI Filter) triggers an exit. """
     # ARRANGE
-    # This data is crafted to create a Golden Cross, and then a very high RSI.
+    # This data is crafted to create a Golden Cross, a price run-up, and then a
+    # gradual decline to make the MA slope negative while keeping RSI high.
     data = {
         'timestamp': pd.to_datetime([
-            '2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04',
-            '2024-01-05', # Lookbehind -> ma_short < ma_long
-            '2024-01-06', # Still ma_short < ma_long
-            '2024-01-07', # Still ma_short < ma_long
-            '2024-01-08', # Signal -> Golden Cross
-            '2024-01-09', # Price explodes -> RSI becomes > 80
-            '2024-01-10', # Action -> Sell
+            '2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05',
+            '2024-01-06', # Lookbehind for Buy
+            '2024-01-07', # Signal for Buy (Golden Cross)
+            '2024-01-08', # Action for Buy, price run-up
+            '2024-01-09', # Price peaks, RSI is very high
+            # --- MODIFICATION: Gradual decline to keep RSI high but make slope negative ---
+            '2024-01-10', # Signal for Sell (Slope turns negative, RSI still high)
+            '2024-01-11', # Action for Sell
         ]),
-        'open':  [100]*10, 'high': [100]*10, 'low': [100]*10, 'volume':[1000]*10,
-        'close': [120, 118, 115, 100, 102, 104, 106, 110, 150, 160],
+        'open':  [100]*11, 'high': [100]*11, 'low': [100]*11, 'volume':[1000]*11,
+        # Modified: Ensuring negative slope by 2024-01-10
+        'close': [100, 100, 100, 100, 100, 105, 115, 125, 123, 114, 108], # <-- Fixed data
     }
     df = pd.DataFrame(data).set_index('timestamp').tz_localize('UTC')
     mocker.patch('backtester.fetch_full_historical_data', return_value=df)
 
     sample_config['strategy_params'].update({
         'use_rsi_filter': True,
-        # --- THE CRITICAL FIX ---
-        # We raise the buy threshold just for this test to allow the entry.
-        # This isolates the sell-side filter, which is the actual target of this test.
-        'rsi_buy_threshold': 70,
-        'rsi_sell_threshold': 80,  # Sell if RSI is high
+        'rsi_buy_threshold': 101,     # Set high to allow entry where RSI is 100
+        'rsi_sell_threshold': 40,     # Lowered to match actual RSI when slope turns negative
         'rsi_period': 3,
+        'short_window': 3,
+        'long_window': 5,
         'use_stop_loss': False, 'use_recovery_exit': False, 'use_hold_duration_filter': False
     })
     sample_config['strategy_start_timestamp'] = "2024-01-01T00:00:00Z"
 
-    # **** DEBUGGING STEP ****
     debug_indicators = calculate_indicators(df.copy(), sample_config['strategy_params'])
-    debug_df(debug_indicators, "Final Final RSI Sell Filter Data")
+    debug_df(debug_indicators, "Sell Signal with RSI Filter Data")
 
     # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
@@ -559,19 +467,18 @@ def test_rsi_sell_filter_triggers_exit(mocker, sample_config):
     # ASSERT
     assert "trades" in results and len(results['trades']) == 1, f"Test failed. Results: {results}"
     trade = results['trades'][0]
-    debug_df(pd.DataFrame(results['trades']), "RSI Sell Filter Test")
+    debug_df(pd.DataFrame(results['trades']), "Sell Signal with RSI Filter Test")
 
-    # The buy on 2024-01-08 is now allowed (RSI 65.85 < 70).
-    # The sell signal is on 2024-01-09 (RSI 94.97 > 80).
-    # The exit happens on the next candle's open, 2024-01-10.
+    # The buy signal is on 2024-01-07, executes on 2024-01-08.
+            # The sell signal should trigger on 2024-01-10 (MA slope negative, RSI > 40).
+    # The exit happens on the next candle's open, 2024-01-11.
     assert trade['reason'] == "Sell Signal"
-    assert trade['exit_ts'] == pd.Timestamp('2024-01-10 00:00:00+00:00', tz='UTC')
+    assert trade['exit_ts'] == pd.Timestamp('2024-01-11 00:00:00+00:00', tz='UTC')
     
 def test_leverage_increases_position_size(mocker, sample_config):
     """ Requirement F4.1: Test leverage multiplier correctly scales entry_size_usd. """
-    # ARRANGE
     mock_df = create_mock_dataframe()
-    mock_df.loc['2024-01-07', 'close'] = 115 # Ensure trade signal
+    mock_df.loc['2024-01-07', 'close'] = 115
     mocker.patch('backtester.fetch_full_historical_data', return_value=mock_df)
 
     sample_config['strategy_params'].update({
@@ -581,14 +488,11 @@ def test_leverage_increases_position_size(mocker, sample_config):
     })
     initial_capital = sample_config['backtest_settings']['initial_capital']
     
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
 
-    # ASSERT
     assert "trades" in results and len(results['trades']) > 0
     trade = results['trades'][0]
     
-    # Expected size = capital * (base_pct/100) * leverage
     expected_size = initial_capital * 0.95 * 3.0
     
     logging.info(f"Expected Size: {expected_size}, Actual Size: {trade['entry_size_usd']}")
@@ -597,24 +501,20 @@ def test_leverage_increases_position_size(mocker, sample_config):
 
 def test_engine_handles_flat_line_data(mocker, sample_config):
     """ NFR Test: Ensure no trades or errors on flat price data. """
-    # ARRANGE
     data = {'timestamp': pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04',
                                          '2024-01-05', '2024-01-06', '2024-01-07']),
             'open': [100]*7, 'high': [100]*7, 'low': [100]*7, 'volume':[1000]*7, 'close': [100]*7 }
     df = pd.DataFrame(data).set_index('timestamp').tz_localize('UTC')
     mocker.patch('backtester.fetch_full_historical_data', return_value=df)
 
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
     
-    # ASSERT
     assert results['message'] == "No trades were executed."
     assert results['debug_info']['crossover_events_found'] == 0
 
 
 def test_engine_handles_insufficient_data(mocker, sample_config):
-    """ (FIXED) F1.4 Test: Ensure graceful error on data shorter than warmup period. """
-    # ARRANGE
+    """ F1.4 Test: Ensure graceful error on data shorter than warmup period. """
     data = {'timestamp': pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03']),
             'open': [100]*3, 'high': [100]*3, 'low': [100]*3, 'volume':[1000]*3, 'close': [100]*3}
     df = pd.DataFrame(data).set_index('timestamp').tz_localize('UTC')
@@ -622,10 +522,8 @@ def test_engine_handles_insufficient_data(mocker, sample_config):
     
     sample_config['strategy_params']['long_window'] = 5
 
-    # ACT
     results = run_backtest("MOCK/USDT", "crypto", "1d", sample_config)
 
-    # ASSERT
     logging.info(f"Results for insufficient data: {results}")
     assert "error" in results
     assert "Not enough data" in results['error']

@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots # <-- MODIFICATION: Added import
 import time
 import ccxt
 from datetime import datetime
@@ -25,30 +26,106 @@ def save_json(filepath: str, data):
 @st.cache_data(ttl=3600)
 def get_crypto_assets():
     try:
-        exchange = ccxt.binance()
+        exchange = ccxt.binanceus()
         markets = exchange.load_markets()
         return sorted([m for m in markets if m.endswith('/USDT') and not markets[m].get('future')])
     except Exception as e:
         st.error(f"Could not fetch asset list: {e}")
         return ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
 
-# --- Charting Functions (Unchanged) ---
-def create_price_chart(price_data: pd.DataFrame, trades: pd.DataFrame, params: dict, selected_timezone: str):
-    if price_data.empty: return go.Figure()
+# --- MODIFICATION: Replaced the old chart function with a new combined one ---
+def create_price_and_rsi_chart(price_data: pd.DataFrame, trades: pd.DataFrame, params: dict, selected_timezone: str):
+    """
+    Creates an interactive Plotly chart with the price/trades on the top subplot
+    and the RSI on the bottom subplot, sharing the same x-axis.
+    """
+    if price_data.empty:
+        return go.Figure()
+
+    # Convert all relevant timestamps to the user's selected timezone
     price_data.index = price_data.index.tz_convert(selected_timezone)
     if not trades.empty:
         trades['entry_ts'] = pd.to_datetime(trades['entry_ts']).dt.tz_convert(selected_timezone)
         trades['exit_ts'] = pd.to_datetime(trades['exit_ts']).dt.tz_convert(selected_timezone)
-    fig = go.Figure(data=[go.Candlestick(x=price_data.index, open=price_data['open'], high=price_data['high'], low=price_data['low'], close=price_data['close'], name='Price')])
+
+    # Create a figure with 2 subplots that share the x-axis
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        row_heights=[0.7, 0.3],
+        subplot_titles=(f"Price Chart", "Relative Strength Index (RSI)")
+    )
+
+    # --- Subplot 1: Price Candlestick Chart ---
+    fig.add_trace(go.Candlestick(
+        x=price_data.index,
+        open=price_data['open'],
+        high=price_data['high'],
+        low=price_data['low'],
+        close=price_data['close'],
+        name='Price'
+    ), row=1, col=1)
+
+    # Add Moving Averages to the price chart
     if 'ma_short' in price_data.columns and price_data['ma_short'].notna().any():
-        fig.add_trace(go.Scatter(x=price_data.index, y=price_data['ma_short'], mode='lines', name=f"MA Cepat ({params.get('short_window')})", line=dict(color='#3498db', width=1.5)))
+        fig.add_trace(go.Scatter(
+            x=price_data.index, y=price_data['ma_short'], mode='lines',
+            name=f"MA Cepat ({params.get('short_window')})",
+            line=dict(color='#3498db', width=1.5)
+        ), row=1, col=1)
+
     if 'ma_long' in price_data.columns and price_data['ma_long'].notna().any():
-        fig.add_trace(go.Scatter(x=price_data.index, y=price_data['ma_long'], mode='lines', name=f"MA Lambat ({params.get('long_window')})", line=dict(color='#f1c40f', width=1.5)))
+        fig.add_trace(go.Scatter(
+            x=price_data.index, y=price_data['ma_long'], mode='lines',
+            name=f"MA Lambat ({params.get('long_window')})",
+            line=dict(color='#f1c40f', width=1.5)
+        ), row=1, col=1)
+
+    # Add Buy/Sell trade markers to the price chart
     if not trades.empty:
-        fig.add_trace(go.Scatter(x=trades['entry_ts'], y=trades['entry_price'], mode='markers', marker=dict(symbol='triangle-up', color='cyan', size=10), name='Buy'))
-        fig.add_trace(go.Scatter(x=trades['exit_ts'], y=trades['exit_price'], mode='markers', marker=dict(symbol='triangle-down', color='yellow', size=10), name='Sell'))
-    fig.update_layout(title='Price Chart with Trades and Strategy Indicators', template='plotly_dark', xaxis_rangeslider_visible=False)
+        fig.add_trace(go.Scatter(
+            x=trades['entry_ts'], y=trades['entry_price'], mode='markers',
+            marker=dict(symbol='triangle-up', color='cyan', size=12, line=dict(width=1, color='black')),
+            name='Buy'
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=trades['exit_ts'], y=trades['exit_price'], mode='markers',
+            marker=dict(symbol='triangle-down', color='yellow', size=12, line=dict(width=1, color='black')),
+            name='Sell'
+        ), row=1, col=1)
+
+    # --- Subplot 2: RSI Chart ---
+    if 'rsi' in price_data.columns and price_data['rsi'].notna().any():
+        rsi_period = params.get('rsi_period', 14)
+        fig.add_trace(go.Scatter(
+            x=price_data.index, y=price_data['rsi'], mode='lines',
+            name=f'RSI ({rsi_period})',
+            line=dict(color='orange', width=1.5)
+        ), row=2, col=1)
+
+        if params.get('use_rsi_filter'):
+            buy_thresh = params.get('rsi_buy_threshold')
+            sell_thresh = params.get('rsi_sell_threshold')
+            fig.add_hline(y=buy_thresh, line_dash="dash", line_color="lime", row=2, col=1,
+                          annotation_text=f"Beli ({buy_thresh})", annotation_position="bottom right")
+            fig.add_hline(y=sell_thresh, line_dash="dash", line_color="red", row=2, col=1,
+                          annotation_text=f"Jual ({sell_thresh})", annotation_position="top right")
+
+    # --- Layout Updates for the Combined Figure ---
+    fig.update_layout(
+        template='plotly_dark',
+        height=750,
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    fig.update_yaxes(title_text="Price (USD)", row=1, col=1)
+    fig.update_yaxes(title_text="RSI Value", row=2, col=1, range=[0, 100])
+    fig.update_xaxes(showticklabels=True)
+
     return fig
+
 
 def create_equity_chart(equity_curve: pd.Series, bnh_equity: pd.Series, drawdown_series: pd.Series, show_bnh: bool, selected_timezone: str):
     equity_curve.index = pd.to_datetime(equity_curve.index).tz_convert(selected_timezone)
@@ -90,10 +167,8 @@ apply_loaded_params()
 
 with st.sidebar:
     st.header("Strategy Controls")
-     # --- NEW: Optimizer workflow instructions ---
-    with st.expander("🚀 Run Parameter Optimizer"):
+    with st.expander("Ã°Å¸Å¡â‚¬ Run Parameter Optimizer"):
         st.info("To find the best parameters, use our powerful cloud-based optimizer on Google Colab.")
-        # --- IMPORTANT: Replace with your actual Colab link after creating it ---
         st.markdown("1. [Click here to open the Optimizer Notebook](https://colab.research.google.com/).", unsafe_allow_html=True)
         st.markdown("2. Upload the `optimizer_colab.py` content to a new notebook.")
         st.markdown("3. Run the notebook, upload configs, and copy the final JSON output.")
@@ -131,8 +206,7 @@ with st.sidebar:
         st.checkbox("Gunakan Filter Volume?", key='use_volume_filter')
         if st.session_state.get('use_volume_filter'):
             st.number_input("Periode Volume MA", key='volume_ma_period')
-        # ... (all other parameter widgets follow the same correct pattern) ...
-        st.checkbox("Gunakan Filter Volatilitas (ATR)?", key='use_volatility_filter')
+        st.checkbox("Gunakan Filter Volatilitas (ATR)?", key='use_volatilidad_filter')
         if st.session_state.get('use_volatility_filter'):
             st.number_input("Periode ATR", key='atr_period')
             st.number_input("Nilai ATR Minimum", format="%.2f", key='atr_min_value')
@@ -168,7 +242,6 @@ with st.sidebar:
         if st.session_state.get('use_fake_loss'):
             st.number_input("   -> Persentase 'Penarikan' (%)", key='withdrawal_pct')
 
-
     st.header("Actions")
     run_button = st.button(":rocket: Run Backtest", use_container_width=True)
     add_alert_button = st.button(":white_check_mark: Add as Live Alert", use_container_width=True)
@@ -179,11 +252,36 @@ current_params = {key: st.session_state.get(key) for key in config.get('default_
 symbol_to_use = st.session_state.symbol if st.session_state.asset_type == 'Crypto' else st.session_state.symbol_stock
 selected_timeframe = st.session_state.timeframe
 
+# --- START OF FIX: Implemented the logic for the "Add as Live Alert" button ---
+if add_alert_button:
+    asset_type = st.session_state.asset_type.lower()
+    
+    # Create a unique ID to prevent conflicts.
+    unique_id = f"{symbol_to_use.replace('/', '')}_{selected_timeframe}_{int(time.time())}"
+    
+    # Construct the new alert dictionary in the required format.
+    new_alert = {
+        "id": unique_id,
+        "symbol": symbol_to_use,
+        "timeframe": selected_timeframe,
+        "asset_type": asset_type,
+        "params": current_params
+    }
+    
+    # Append the new alert to the list and save it to the JSON file.
+    alerts.append(new_alert)
+    save_json('alerts.json', alerts)
+    
+    # Provide user feedback and refresh the UI to show the new alert.
+    st.success(f"Alert '{unique_id}' added successfully!")
+    time.sleep(1) # Short delay for the user to read the message.
+    st.rerun()
+# --- END OF FIX ---
+
 if 'last_run_results' not in st.session_state: st.session_state.last_run_results = None
 if 'optimization_results' not in st.session_state: st.session_state.optimization_results = None
 
-# --- NEW: Main panel section for pasting JSON from Colab ---
-st.header("⚡️ Load Optimized Parameters from Colab")
+st.header("Ã¢Å¡Â¡Ã¯Â¸  Load Optimized Parameters from Colab")
 colab_json_input = st.text_area(
     "Paste JSON output from Google Colab here:",
     height=200,
@@ -195,7 +293,7 @@ if st.button("Load & Display Optimized Parameters"):
         try:
             parsed_data = json.loads(colab_json_input)
             st.session_state.optimization_results = pd.DataFrame(parsed_data)
-            st.session_state.last_run_results = None # Clear any previous backtest results
+            st.session_state.last_run_results = None
             st.success("Successfully loaded optimization results! See table below.")
             st.rerun()
         except json.JSONDecodeError:
@@ -250,7 +348,6 @@ if optimization_results is not None:
         st.rerun()
 
 elif results and live_config:
-    # --- THIS IS THE CORRECTED AND RESTORED DISPLAY LOGIC ---
     st.header("Backtest Results")
     if "error" in results:
         st.error(results["error"])
@@ -261,7 +358,8 @@ elif results and live_config:
             df = pd.DataFrame.from_dict(results['historical_data'], orient='index')
             df.index = pd.to_datetime(df.index)
             trades_df = pd.DataFrame(results.get('trades', []))
-            st.plotly_chart(create_price_chart(df, trades_df, live_config['strategy_params'], "Asia/Jakarta"), use_container_width=True)
+            # --- MODIFICATION: Call the new, combined charting function ---
+            st.plotly_chart(create_price_and_rsi_chart(df, trades_df, live_config['strategy_params'], "Asia/Jakarta"), use_container_width=True)
 
         if 'metrics' in results and 'equity_curve' in results:
             metrics = results['metrics']

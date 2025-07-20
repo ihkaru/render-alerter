@@ -1,3 +1,5 @@
+# shared_logic.py
+
 import logging
 import pandas as pd
 import pandas_ta as ta
@@ -41,7 +43,7 @@ def fetch_full_historical_data(asset_type: str, symbol: str, timeframe: str, sta
             if df.empty: return None
             df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}, inplace=True)
         elif asset_type == 'crypto':
-            exchange = getattr(ccxt, 'binance')()
+            exchange = getattr(ccxt, 'binanceus')()
             all_ohlcv = []
             since = int(fetch_start_date.timestamp() * 1000)
             end_milli = int(end_date.timestamp() * 1000)
@@ -95,7 +97,7 @@ def fetch_data(asset_type: str, symbol: str, timeframe: str, params: Dict[str, A
             df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}, inplace=True)
         elif asset_type == 'crypto':
             config = load_json('config.json')
-            exchange_id = config.get('ccxt_exchange_id', 'binance')
+            exchange_id = config.get('ccxt_exchange_id', 'binanceus')
             exchange = getattr(ccxt, exchange_id)()
             if not exchange.has['fetchOHLCV']: return None
             limit = 1000 if historical_scan else (longest_period + 50) if longest_period > 0 else 100
